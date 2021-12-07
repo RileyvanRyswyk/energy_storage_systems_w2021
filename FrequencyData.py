@@ -1,5 +1,5 @@
-from datetime import datetime
-import math
+from datetime import timedelta
+import warnings
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -17,6 +17,9 @@ class FrequencyData:
     # Grid Frequency Measurements of the Continental European Power System during 2019
     # https://data.dtu.dk/articles/dataset/Grid_Frequency_Measurements_of_the_Continental_European_Power_System_during_2019/12758429
     DTU_DATA = "data/freq_DK1_2019.csv"
+
+    # Nominal frequency [Hz]
+    F_NOMINAL = 50
 
     def __init__(self, data_src):
         self.df = None          # data frame
@@ -55,21 +58,27 @@ class FrequencyData:
             self.DTU_DATA,
             header=0,                               # override header names in the file
             names=["datetime", "freq"],
-            dtype={"freq": np.float32},
-            on_bad_lines='skip',                    # skip NaN rows
+            dtype={"datetime": np.float64, "freq": np.float32},
             # nrows=2 * 15 #* 60 * 1000
         )
+
+        # clean up invalid values
+        self.df.dropna(inplace=True)
 
         # faster than defining a custom function to parse directly in read_csv
         self.df['datetime'] = pd.to_datetime(self.df['datetime'], unit='ms')
         self.df.set_index('datetime', inplace=True)
 
+        # correct offset to ensure even balance throughout the year
+        # assume constant measurement offset
+        offset = self.df['freq'].mean() - self.F_NOMINAL
+        self.df['freq'] -= offset
+
     def compute_power(self):
-        nominal_freq = 50       # nominal system frequency in Hz
         dead_band = 0           # control dead band in Hz
         max_df = 0.2            # maximum frequency deviation for full power [Hz]
 
-        delta_f = (self.df['freq'].to_numpy() - nominal_freq)
+        delta_f = (self.df['freq'].to_numpy() - self.F_NOMINAL)
 
         # apply dead band logic, if using
         delta_f[np.abs(delta_f) <= dead_band] = 0
@@ -94,8 +103,24 @@ class FrequencyData:
         sns.displot(data=self.df, x="freq", kde=True, bins=200)
         plt.show()
 
-    def plot_energy(self):
-        df_reduced = self.df['power'].resample('15T').sum()
+    def plot_energy(self, duration=None, offset=timedelta()):
+        start_date = self.df.first_valid_index() + offset
+        last_date = self.df.last_valid_index()
+
+        if duration is None:
+            end_date = last_date
+        else:
+            end_date = start_date + duration
+
+        if start_date > last_date:
+            raise "Offset too large! The requested start date extends beyond the available data"
+
+        if end_date > last_date:
+            warnings.warn("End date exceeds available data. Truncating end date.")
+            end_date = last_date
+
+        # Filter to desired date range and resample into 15 minute intervals
+        df_reduced = self.df['power'].loc[start_date:end_date].resample('15T').sum()
         df_cumulative = df_reduced.cumsum()
 
         # df_reduced.plot.line()
@@ -104,6 +129,6 @@ class FrequencyData:
 
 
 if __name__ == "__main__":
-    fd = FrequencyData(FrequencyData.PQ_DATA)
+    fd = FrequencyData(FrequencyData.DTU_DATA)
    # fd.plot_distribution()
-    fd.plot_energy()
+    fd.plot_energy(duration=timedelta(days=30), offset=timedelta(days=4))
