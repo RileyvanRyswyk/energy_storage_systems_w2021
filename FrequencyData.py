@@ -50,27 +50,19 @@ class FrequencyData:
 
     def load_dtu_data(self):
         self.time_step = 0.5    # data at 0.5 second intervals
-        def timestamp_to_datetime(ts_list):
-            # timestamps are given in milliseconds, while Python uses seconds
-            def to_datetime(timestamp_ms):
-                timestamp_s = float(timestamp_ms) / 1000
-                if math.isnan(timestamp_s):
-                    return timestamp_s
-                else:
-                    return datetime.fromtimestamp(timestamp_s)
-
-            return list(map(lambda x: to_datetime(x), ts_list))
 
         self.df = pd.read_csv(
             self.DTU_DATA,
             header=0,                               # override header names in the file
             names=["datetime", "freq"],
             dtype={"freq": np.float32},
-            index_col="datetime",
-            date_parser=timestamp_to_datetime,
             on_bad_lines='skip',                    # skip NaN rows
-            # nrows=2 * 15 * 60 * 1000
+            # nrows=2 * 15 #* 60 * 1000
         )
+
+        # faster than defining a custom function to parse directly in read_csv
+        self.df['datetime'] = pd.to_datetime(self.df['datetime'], unit='ms')
+        self.df.set_index('datetime', inplace=True)
 
     def compute_power(self):
         nominal_freq = 50       # nominal system frequency in Hz
@@ -112,6 +104,6 @@ class FrequencyData:
 
 
 if __name__ == "__main__":
-    fd = FrequencyData(FrequencyData.DTU_DATA)
+    fd = FrequencyData(FrequencyData.PQ_DATA)
    # fd.plot_distribution()
     fd.plot_energy()
