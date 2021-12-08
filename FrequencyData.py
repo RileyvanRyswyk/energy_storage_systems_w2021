@@ -32,7 +32,7 @@ class FrequencyData:
         else:
             raise "Invalid data source provided"
 
-        self.compute_power()
+        self.compute_delta_f()
 
         # diagnostics
         self.df.info(verbose=False, memory_usage="deep")
@@ -74,24 +74,13 @@ class FrequencyData:
         offset = self.df['freq'].mean() - self.F_NOMINAL
         self.df['freq'] -= offset
 
-    def compute_power(self):
-        dead_band = 0           # control dead band in Hz
-        max_df = 0.2            # maximum frequency deviation for full power [Hz]
+        # resample to 1 second intervals
+        self.df = self.df.resample('1S').first()
+        self.time_step = 1
 
-        delta_f = (self.df['freq'].to_numpy() - self.F_NOMINAL)
-
-        # apply dead band logic, if using
-        delta_f[np.abs(delta_f) <= dead_band] = 0
-
-        # saturate frequency deviation at control maximum
-        delta_f = np.clip(delta_f, -max_df, max_df)
-
-        # convert frequency deviation to power [pu for use with hours]
-        power = delta_f * self.time_step / 3600
-
-        # TODO account for drift during data period
-
-        self.df.insert(len(self.df.columns), 'power', power)
+    def compute_delta_f(self):
+        delta_f = self.df['freq'].to_numpy() - self.F_NOMINAL
+        self.df.insert(len(self.df.columns), 'delta_f', delta_f)
 
     def plot_distribution(self):
         # libraries & dataset
@@ -103,7 +92,7 @@ class FrequencyData:
         sns.displot(data=self.df, x="freq", kde=True, bins=200)
         plt.show()
 
-    def plot_energy(self, duration=None, offset=timedelta()):
+    def get_data_subset(self, duration=None, offset=timedelta()):
         start_date = self.df.first_valid_index() + offset
         last_date = self.df.last_valid_index()
 
@@ -119,16 +108,35 @@ class FrequencyData:
             warnings.warn("End date exceeds available data. Truncating end date.")
             end_date = last_date
 
-        # Filter to desired date range and resample into 15 minute intervals
-        df_reduced = self.df['power'].loc[start_date:end_date].resample('15T').sum()
-        df_cumulative = df_reduced.cumsum()
+        # Filter to desired date range
+        return self.df.loc[start_date:end_date]
 
-        # df_reduced.plot.line()
-        df_cumulative.plot.area(stacked=False)
-        plt.show()
+    # def plot_energy(self, duration=None, offset=timedelta()):
+    #     start_date = self.df.first_valid_index() + offset
+    #     last_date = self.df.last_valid_index()
+    #
+    #     if duration is None:
+    #         end_date = last_date
+    #     else:
+    #         end_date = start_date + duration
+    #
+    #     if start_date > last_date:
+    #         raise "Offset too large! The requested start date extends beyond the available data"
+    #
+    #     if end_date > last_date:
+    #         warnings.warn("End date exceeds available data. Truncating end date.")
+    #         end_date = last_date
+    #
+    #     # Filter to desired date range and resample into 15 minute intervals
+    #     df_reduced = self.df['power'].loc[start_date:end_date].resample('15T').sum()
+    #     df_cumulative = df_reduced.cumsum()
+    #
+    #     # df_reduced.plot.line()
+    #     df_cumulative.plot.area(stacked=False)
+    #     plt.show()
 
 
 if __name__ == "__main__":
     fd = FrequencyData(FrequencyData.DTU_DATA)
-   # fd.plot_distribution()
-    fd.plot_energy(duration=timedelta(days=30), offset=timedelta(days=4))
+    # fd.plot_distribution()
+    # fd.plot_energy(duration=timedelta(days=30), offset=timedelta(days=4))
