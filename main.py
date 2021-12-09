@@ -5,8 +5,10 @@ import matplotlib.dates as mdates
 import numpy as np
 
 from Battery import Battery
+from Dataset import Dataset
 from FrequencyData import FrequencyData
 from StorageSystem import StorageSystem
+
 
 
 def simulate_day():
@@ -18,38 +20,72 @@ def simulate_day():
 
     # add empty rows for simulation results
     i = 0
-    results = np.zeros((len(data), 3))
-    for row in data.itertuples(index=False):
-        results[i] = ss.execute_step(df=row.delta_f, dt=fd.time_step)
+    results = np.zeros((len(data), 5))
+    for row in data.itertuples(index=True):
+        results[i] = ss.execute_step(df=row.delta_f, dt=fd.time_step, t=row.Index)
         i += 1
 
-    # plot
-    fig, ax1 = plt.subplots()
+    # p_batt, p_fcr, p_soc_fcr, p_soc_trans, self.battery.soc
+    plot_data = [Dataset(
+        x=data.index,
+        y=data['freq'],
+        title='Daily Load Profile',
+        ylabel=' Sys Freq [Hz]'
+    ), Dataset(
+        x=data.index,
+        y=results[:, 1],
+        ylabel='FCR Power [pu]'
+    ), Dataset(
+        x=data.index,
+        y=results[:, 2],
+        ylabel='FCR SOC Power [pu]'
+    ), Dataset(
+        x=data.index,
+        y=results[:, 3],
+        ylabel='Trans. Power [pu]'
+    ), Dataset(
+        x=data.index,
+        y=results[:, 0],
+        ylabel='Battery Power [pu]'
+    ), Dataset(
+        x=data.index,
+        y=100 * results[:, 4],
+        ylabel='SOC [%]',
+        ylim=(0, 100)
+    )]
 
-    # df
-    ax1.plot(data.index, data['delta_f'], linewidth=1.0, alpha=0.5)
+    plot(plot_data)
 
-    # Power
-    ax1.plot(data.index, results[:, 0], linewidth=1.0, alpha=0.5)
 
-    # format x labels
-    locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
-    formatter = mdates.ConciseDateFormatter(locator)
-    ax1.xaxis.set_major_locator(locator)
-    ax1.xaxis.set_major_formatter(formatter)
+def plot(plot_data):
+    n_plots = len(plot_data)
+    fig, axs = plt.subplots(n_plots, 1, constrained_layout=True, figsize=(8, 2*n_plots))
 
-    ax1.set_xlabel('Date/Time')
-    ax1.set_ylabel('Charge/Discharge Power [pu] / Δf [Hz]')
+    for nn, ax in enumerate(axs):
+        ax.plot(plot_data[nn].x, plot_data[nn].y)
 
-    ax2 = ax1.twinx()
+        # format x labels
+        locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
+        formatter = mdates.ConciseDateFormatter(locator)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
 
-    # SOC - convert to percent
-    ax2.plot(data.index, 100 * results[:, 2], linewidth=1.0)
-    ax2.set_ylabel('SOC [%]')
-    ax2.set_ylim(bottom=0, top=100)
+        if plot_data[nn].title is not None:
+            ax.set_title(plot_data[nn].title)
+
+        if plot_data[nn].xlabel is not None:
+            ax.set_xlabel(plot_data[nn].xlabel)
+        if plot_data[nn].ylabel is not None:
+            ax.set_ylabel(plot_data[nn].ylabel)
+
+        if plot_data[nn].xlim is not None:
+            ax.set_xlim(plot_data[nn].xlim)
+        if plot_data[nn].ylim is not None:
+            ax.set_ylim(plot_data[nn].ylim)
+
+        ax.grid(True, alpha=0.3)
 
     plt.show()
-
 
 if __name__ == "__main__":
     simulate_day()
