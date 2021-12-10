@@ -18,8 +18,8 @@ class FrequencyData:
     # https://data.dtu.dk/articles/dataset/Grid_Frequency_Measurements_of_the_Continental_European_Power_System_during_2019/12758429
     DTU_DATA = "data/freq_DK1_2019.csv"
 
-    # Nominal frequency [Hz]
-    F_NOMINAL = 50
+    # # Nominal frequency [Hz]
+    # F_NOMINAL = 50
 
     def __init__(self, data_src):
         self.df = None          # data frame
@@ -32,7 +32,7 @@ class FrequencyData:
         else:
             raise "Invalid data source provided"
 
-        self.compute_delta_f()
+        # self.compute_delta_f()
 
         # diagnostics
         self.df.info(verbose=False, memory_usage="deep")
@@ -78,9 +78,9 @@ class FrequencyData:
         self.df = self.df.resample('1S').first()
         self.time_step = 1
 
-    def compute_delta_f(self):
-        delta_f = self.df['freq'].to_numpy() - self.F_NOMINAL
-        self.df.insert(len(self.df.columns), 'delta_f', delta_f)
+    # def compute_delta_f(self):
+    #     delta_f = self.df['freq'].to_numpy() - self.F_NOMINAL
+    #     self.df.insert(len(self.df.columns), 'delta_f', delta_f)
 
     def plot_distribution(self):
         # libraries & dataset

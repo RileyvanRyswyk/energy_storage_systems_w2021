@@ -10,19 +10,21 @@ from FrequencyData import FrequencyData
 from StorageSystem import StorageSystem
 
 
-
 def simulate_day():
     fd = FrequencyData(FrequencyData.PQ_DATA)
     data = fd.get_data_subset(duration=timedelta(days=1))
 
-    battery = Battery(eta_char=0.95, eta_disc=0.95)
+    # https://www.mdpi.com/2313-0105/2/3/29/pdf section 5.1
+    # from Energy Neighbour project, self discharge is negligible during constant operation
+    # losses primarily from power electronics, auxillary equipment
+    battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0)
     ss = StorageSystem(battery)
 
     # add empty rows for simulation results
     i = 0
     results = np.zeros((len(data), 5))
     for row in data.itertuples(index=True):
-        results[i] = ss.execute_step(df=row.delta_f, dt=fd.time_step, t=row.Index)
+        results[i] = ss.execute_step(freq=row.freq, dt=fd.time_step, t=row.Index)
         i += 1
 
     # p_batt, p_fcr, p_soc_fcr, p_soc_trans, self.battery.soc

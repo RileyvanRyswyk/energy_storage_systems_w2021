@@ -2,6 +2,9 @@
 
 class Battery:
 
+    # eta_char [%/100]
+    # eta_disc [%/100]
+    # eta_self_disc [%/100 per day]
     def __init__(self, soc=0.5, eta_char=1, eta_disc=1, eta_self_disc=0):
         self.soc = soc                                          # state of charge [%/100]
         self.eta_char = eta_char                                # charging efficiency [%/100]
