@@ -1,6 +1,5 @@
 import math
 from collections import deque
-from datetime import datetime
 from datetime import timedelta
 
 import numpy as np
@@ -16,61 +15,88 @@ class StorageSystem:
     DEAD_BAND = 0.01            # allowed control dead band [Hz]
     MAX_DELTA_F = 0.2           # maximum frequency deviation for full power [Hz]
     MAX_OVER_FULFILLMENT = 0.2  # maximum over fulfillment allowed [%/100]
-    ALERT_DURATION = 0.25       # duration full power must be delivered in the alert state [h]
+    ALERT_DURATION = 0.5        # duration that full power must be delivered in the alert state [h]
 
     # Related to primary market transactions
-    PRODUCT_DURATION = 0.25     # duration of transaction [h]
-    TRANSACTION_DELAY = 0.5     # delay between placing request and delivery [h]
-    P_MAX_CONST_DEV = 0.25      # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
+    TRANSACTION_DURATION = 0.25     # duration of transaction [h]
+    TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
+    P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
 
-    def __init__(self, battery=Battery(), p_market=1, capacity=1, p_max=1.25, p_base=1):
+    def __init__(self, battery=Battery(), p_market=1, p_max=1.25):
         self.battery = battery      # Battery class
-        self.p_market = p_market    # marketable power [pu]
-        self.capacity = capacity    # battery capacity in [pu * h]
-        self.p_max = p_max          # maximum power [pu]
-        self.p_base = p_base        # base power [MW]
+        self.p_market = p_market    # marketable power [MW]
+        self.p_max = p_max          # maximum power [MW]
         self.soc_target = 0.5
 
         # maximum allowed state of charge in normal state [%/100]
-        self.soc_max = (capacity - self.ALERT_DURATION * p_market) / capacity
+        self.soc_max = (battery.capacity_nominal - self.ALERT_DURATION * p_market) / battery.capacity_nominal
 
         # minimum allowed state of charge in normal state [%/100]
-        self.soc_min = self.ALERT_DURATION * p_market / capacity
+        self.soc_min = self.ALERT_DURATION * p_market / battery.capacity_nominal
+
+        # The amount of energy required to cover the transaction delay period at the maximum assumed constant deviation
+        energy_transaction_delay = self.TRANSACTION_DELAY * self.P_MAX_CONST_DEV * self.p_market
 
         # SOC when a sell transaction should be initiated to maintain SOC within nominal limits during normal operation
-        self.soc_sell_trigger = self.soc_max - (self.TRANSACTION_DELAY * self.P_MAX_CONST_DEV) / self.capacity
+        self.soc_sell_trigger = self.soc_max - energy_transaction_delay / self.battery.capacity_nominal
 
         # SOC when a buy transaction should be initiated to maintain SOC within nominal limits during normal operation
-        self.soc_buy_trigger = self.soc_min + (self.TRANSACTION_DELAY * self.P_MAX_CONST_DEV) / self.capacity
+        self.soc_buy_trigger = self.soc_min + energy_transaction_delay / self.battery.capacity_nominal
 
         self.scheduled_transactions = deque()
         self.transaction_archive = []
 
+        # store last 5 minutes of values (assuming dt = 1)
+        # for computing rolling average
+        self.df_recent = deque([0] * 5*60, maxlen=5*60)
+
+        # store data during simulation for plotting later
+        self.sim_data = {}
+        self.sim_index = 0
+
+    def init_sim_data(self, n_data_pts):
+        self.sim_index = 0
+        self.sim_data = {
+            't': np.zeros(n_data_pts, dtype='datetime64[s]'),
+            'freq': np.zeros(n_data_pts, dtype=np.float64),
+            'p_batt': np.zeros(n_data_pts, dtype=np.float64),
+            'p_fcr': np.zeros(n_data_pts, dtype=np.float64),
+            'p_soc_fcr': np.zeros(n_data_pts, dtype=np.float64),
+            'p_soc_trans': np.zeros(n_data_pts, dtype=np.float64),
+            'batt_soc': np.zeros(n_data_pts, dtype=np.float64),
+        }
+
+    # Execute one time step of the storage system simulation
+    #
     # df : frequency delta in [Hz]
     # t  : current timestamp [datetime]
     # dt : time delta [s]
     def execute_step(self, freq, t, dt=1):
         df = freq - self.F_NOMINAL
+        self.df_recent.append(df)
 
         # FCR power (product);
         # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
         delta_soc_sch_trans = self.compute_scheduled_delta_soc(t)
         p_soc_trans = self.manage_soc_trans(t, delta_soc_sch_trans)
-        p_fcr, p_soc_fcr = self.compute_fcr_power(df, p_soc_trans, delta_soc_sch_trans)
+        p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans)
 
-        p_batt = p_fcr + p_soc_fcr + p_soc_trans
+        p_batt = (p_fcr + p_soc_fcr + p_soc_trans)
 
-        # energy units % of battery capacity
-        e = (p_batt * dt / 3600) / self.capacity
+        # Convert to energy units in hours
+        e = (p_batt * dt / 3600)
 
-        if e > 0:
-            self.battery.discharge(e)
-        elif e < 0:
-            self.battery.charge(-e)
+        self.battery.execute_step(e, p_batt, dt)
 
-        self.battery.count_self_discharge_losses(dt)
-
-        return p_batt, p_fcr, p_soc_fcr, p_soc_trans, self.battery.soc
+        # store results from this step
+        self.sim_data['t'][self.sim_index] = t
+        self.sim_data['freq'][self.sim_index] = freq
+        self.sim_data['p_batt'][self.sim_index] = p_batt
+        self.sim_data['p_fcr'][self.sim_index] = p_fcr
+        self.sim_data['p_soc_fcr'][self.sim_index] = p_soc_fcr
+        self.sim_data['p_soc_trans'][self.sim_index] = p_soc_trans
+        self.sim_data['batt_soc'][self.sim_index] = self.battery.soc
+        self.sim_index += 1
 
     # Compute the change in state of charge due to scheduled transactions
     # positive transactions -> sell power
@@ -84,10 +110,14 @@ class StorageSystem:
             if remaining_hours < 0:
                 raise "Transaction not properly archived!"
 
-        return -energy / self.capacity
+        return -energy / self.battery.capacity_nominal
 
-    def compute_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans):
-        p_fcr = -np.clip(df / self.MAX_DELTA_F, -1, 1)
+    # Compute the change in state of charge due to scheduled transactions
+    # positive -> deliver power
+    # negative -> consume power
+    def compute_net_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans):
+
+        p_fcr = self.compute_fcr_power(df)
 
         # active energy management via allowed FCR power manipulation
         p_soc = 0
@@ -97,7 +127,7 @@ class StorageSystem:
 
             # 1. over-fulfillment
             if np.sign(soc_error) * np.sign(p_fcr) > 0:
-                p_soc = np.sign(p_fcr) * min(self.MAX_OVER_FULFILLMENT, self.p_max - np.abs(net_p)) * self.p_market
+                p_soc = p_fcr * min(self.MAX_OVER_FULFILLMENT, (self.p_max - np.abs(net_p)) / self.p_market)
 
             # 2. dead band
             elif 0 <= np.abs(df) <= self.DEAD_BAND:
@@ -106,6 +136,10 @@ class StorageSystem:
             # TODO activation delay
 
         return p_fcr, p_soc
+
+    def compute_fcr_power(self, df):
+        # Formula 3.6 of PQ Bedingungen (page 58, 1736)
+        return -np.clip(df / self.MAX_DELTA_F, -1, 1) * self.p_market
 
     def manage_soc_trans(self, t, delta_soc):
         p = 0
@@ -141,19 +175,35 @@ class StorageSystem:
 
     def create_transaction(self, t, delta_soc):
         # TODO transaction size limits
-        if self.battery.soc + delta_soc > self.soc_sell_trigger:
+
+        est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * self.TRANSACTION_DELAY
+        est_delta_soc = est_delta_e / self.battery.capacity_nominal
+
+        future_soc = self.battery.soc + delta_soc
+        est_future_soc = future_soc + est_delta_soc
+
+        if max(future_soc, est_future_soc) > self.soc_sell_trigger:
             self.scheduled_transactions.append(Transaction(
                 start_time=t+timedelta(hours=self.TRANSACTION_DELAY),
-                duration=timedelta(hours=self.PRODUCT_DURATION),
-                power=self.P_MAX_CONST_DEV
+                duration=timedelta(hours=self.TRANSACTION_DURATION),
+                power=self.p_max - self.p_market
             ))
-        elif self.battery.soc + delta_soc < self.soc_buy_trigger:
+        elif min(future_soc, est_future_soc) < self.soc_buy_trigger:
             self.scheduled_transactions.append(Transaction(
                 start_time=t+timedelta(hours=self.TRANSACTION_DELAY),
-                duration=timedelta(hours=self.PRODUCT_DURATION),
-                power=-self.P_MAX_CONST_DEV
+                duration=timedelta(hours=self.TRANSACTION_DURATION),
+                power=-(self.p_max - self.p_market)
             ))
 
+    def get_total_trans_volume(self):
+        sold = 0
+        bought = 0
+        for transaction in self.transaction_archive:
+            if transaction.power > 0:
+                sold += transaction.power
+            else:
+                bought += transaction.power
+        return sold * self.TRANSACTION_DURATION, -bought * self.TRANSACTION_DURATION
 
 # https://stackoverflow.com/questions/13071384/ceil-a-datetime-to-next-quarter-of-an-hour
 # round datetime to next 15 mins
