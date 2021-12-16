@@ -14,7 +14,7 @@ from StorageSystem import StorageSystem
 
 
 def simulate_storage(duration):
-    fd = FrequencyData(FrequencyData.DTU_DATA)
+    fd = FrequencyData(FrequencyData.PQ_DATA)
     data = fd.get_data_subset(duration=duration)
 
     # https://www.mdpi.com/2313-0105/2/3/29/pdf section 5.1
@@ -186,4 +186,4 @@ def plot_rel_freq_data(ss):
 #     plt.show()
 
 if __name__ == "__main__":
-    simulate_storage(duration=timedelta(days=30))
+    simulate_storage(duration=timedelta(days=31))
