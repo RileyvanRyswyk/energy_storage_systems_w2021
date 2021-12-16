@@ -176,8 +176,9 @@ class StorageSystem:
     def create_transaction(self, t, delta_soc):
         # TODO transaction size limits
 
-        est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * self.TRANSACTION_DELAY
-        est_delta_soc = est_delta_e / self.battery.capacity_nominal
+        # est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * self.TRANSACTION_DELAY
+        # est_delta_soc = est_delta_e / self.battery.capacity_nominal
+        est_delta_soc = 0
 
         future_soc = self.battery.soc + delta_soc
         est_future_soc = future_soc + est_delta_soc
