@@ -19,7 +19,7 @@ class FrequencyData:
     DTU_DATA = "data/freq_DK1_2019.csv"
 
     # # Nominal frequency [Hz]
-    # F_NOMINAL = 50
+    F_NOMINAL = 50
 
     def __init__(self, data_src):
         self.df = None          # data frame
@@ -62,12 +62,13 @@ class FrequencyData:
             # nrows=2 * 15 #* 60 * 1000
         )
 
-        # clean up invalid values
-        self.df.dropna(inplace=True)
-
         # faster than defining a custom function to parse directly in read_csv
         self.df['datetime'] = pd.to_datetime(self.df['datetime'], unit='ms')
         self.df.set_index('datetime', inplace=True)
+
+        # clean up invalid values, by replacing them with the nominal frequency
+        # self.df.dropna(inplace=True)
+        self.df.where(self.df.notna(), other=self.F_NOMINAL, inplace=True)
 
         # correct offset to ensure even balance throughout the year
         # assume constant measurement offset

@@ -76,21 +76,28 @@ class Battery:
             pass
 
         # (2) Sign change of load (from charge to discharge or vice versa);
-        # (3) Relatively strong change of gradient during charge or discharge (i.e., DC rate = 0.6).
-        elif np.sign(c_rate) != np.sign(self.current_cycle['c_rate'][0]) \
-                or np.abs(c_rate - self.current_cycle['c_rate'][0]) > 0.6:
+
+        elif np.sign(c_rate) != np.sign(self.current_cycle['c_rate'][0]):
             self.add_half_cycle()
             self.current_cycle['soc'].append(self.soc)
             self.current_cycle['c_rate'].append(c_rate)
+
+        # # (3) Relatively strong change of gradient during charge or discharge (i.e., DC rate = 0.6).
+        # elif np.abs(c_rate - self.current_cycle['c_rate'][0]) > 0.6:
+        #     self.add_half_cycle()
+        #     self.current_cycle['soc'].append(self.soc)
+        #     self.current_cycle['c_rate'].append(c_rate)
 
         else:
             self.current_cycle['soc'].append(self.soc)
             self.current_cycle['c_rate'].append(c_rate)
 
     def add_half_cycle(self):
-        cycle_depth = np.abs(self.current_cycle['soc'][0] - self.soc)
+        cycle_depth = self.soc - self.current_cycle['soc'][0]
         self.cycles['cycle_depth'].append(cycle_depth)
-        self.cycles['c_rate'].append(np.average(self.current_cycle['c_rate']))
+        self.cycles['c_rate'].append(
+            max(min(self.current_cycle['c_rate']), max(self.current_cycle['c_rate']), key=abs)
+        )
         self.current_cycle['soc'].clear()
         self.current_cycle['c_rate'].clear()
 
