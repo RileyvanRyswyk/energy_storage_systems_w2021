@@ -145,7 +145,7 @@ class StorageSystem:
             # 2. dead band
             elif 0 <= np.abs(df) <= self.DEAD_BAND:
                 p_soc = -p_fcr
-                self.energy['deadband'][1 * (p_fcr > 0)] += p_soc * dt / 3600
+                self.energy['deadband'][1 * (p_fcr < 0)] -= p_soc * dt / 3600
 
             # TODO activation delay
 
