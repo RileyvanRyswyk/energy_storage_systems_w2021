@@ -113,7 +113,7 @@ def plot_time_curves(ss):
 # https://matplotlib.org/stable/gallery/statistics/hist.html?highlight=2d%20hist
 def plot_rel_freq_data(ss):
     fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
-    fig.suptitle('Battery Statistics: '.format(ss))
+    fig.suptitle('Battery Statistics: {}'.format(ss))
 
     axs = [
         plt.subplot(221),
