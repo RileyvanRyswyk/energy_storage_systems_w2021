@@ -53,12 +53,23 @@ class StorageSystem:
         # store data during simulation for plotting later
         self.sim_data = {}
         self.sim_index = 0
+        self.energy = {
+            'deadband': [0, 0],             # pos, neg
+            'over_fulfillment': [0, 0]      # pos, neg
+        }
+
+    def __str__(self):
+        dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
+        dh = np.round(dt / np.timedelta64(1, 'h'))
+        return "{} MW, {} MWh, {} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
+            self.p_market, self.battery.capacity_nominal, dh, self.battery.eta_char, self.battery.eta_disc)
 
     def init_sim_data(self, n_data_pts):
         self.sim_index = 0
         self.sim_data = {
             't': np.zeros(n_data_pts, dtype='datetime64[s]'),
             'freq': np.zeros(n_data_pts, dtype=np.float64),
+            'df': np.zeros(n_data_pts, dtype=np.float64),
             'p_batt': np.zeros(n_data_pts, dtype=np.float64),
             'p_fcr': np.zeros(n_data_pts, dtype=np.float64),
             'p_soc_fcr': np.zeros(n_data_pts, dtype=np.float64),
@@ -79,19 +90,20 @@ class StorageSystem:
         # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
         delta_soc_sch_trans = self.compute_scheduled_delta_soc(t)
         p_soc_trans = self.manage_soc_trans(t, delta_soc_sch_trans)
-        p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans)
+        p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans, dt)
 
         p_batt = (p_fcr + p_soc_fcr + p_soc_trans)
 
         # Convert to energy units in hours
         e = (p_batt * dt / 3600)
 
-        self.battery.execute_step(e, p_batt, dt)
+        e_batt_act, p_batt_act = self.battery.execute_step(e, p_batt, dt)
 
         # store results from this step
         self.sim_data['t'][self.sim_index] = t
         self.sim_data['freq'][self.sim_index] = freq
-        self.sim_data['p_batt'][self.sim_index] = p_batt
+        self.sim_data['df'][self.sim_index] = df
+        self.sim_data['p_batt'][self.sim_index] = p_batt_act
         self.sim_data['p_fcr'][self.sim_index] = p_fcr
         self.sim_data['p_soc_fcr'][self.sim_index] = p_soc_fcr
         self.sim_data['p_soc_trans'][self.sim_index] = p_soc_trans
@@ -115,7 +127,7 @@ class StorageSystem:
     # Compute the change in state of charge due to scheduled transactions
     # positive -> deliver power
     # negative -> consume power
-    def compute_net_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans):
+    def compute_net_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans, dt):
 
         p_fcr = self.compute_fcr_power(df)
 
@@ -128,10 +140,12 @@ class StorageSystem:
             # 1. over-fulfillment
             if np.sign(soc_error) * np.sign(p_fcr) > 0:
                 p_soc = p_fcr * min(self.MAX_OVER_FULFILLMENT, (self.p_max - np.abs(net_p)) / self.p_market)
+                self.energy['over_fulfillment'][1 * (p_fcr > 0)] -= p_soc * dt / 3600
 
             # 2. dead band
             elif 0 <= np.abs(df) <= self.DEAD_BAND:
                 p_soc = -p_fcr
+                self.energy['deadband'][1 * (p_fcr > 0)] += p_soc * dt / 3600
 
             # TODO activation delay
 

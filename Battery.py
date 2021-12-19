@@ -13,10 +13,11 @@ class Battery:
     # eta_disc [%/100]
     # eta_self_disc [%/100 per day]
     def __init__(self, soc=0.5, eta_char=1, eta_disc=1, eta_self_disc=0, capacity_nominal=1):
+        self.starting_soc = soc                                 # starting state of charge [%/100]
         self.soc = soc                                          # state of charge [%/100]
         self.eta_char = eta_char                                # charging efficiency [%/100]
         self.eta_disc = eta_disc                                # discharging efficiency [%/100]
-        self.eta_self_disc = eta_self_disc / (3600 * 24)        # self discharge [%/100 per s]
+        self.eta_self_disc_s = eta_self_disc / (3600 * 24)      # self discharge [%/100 per s]
         self.eq_full_cycle_count = 0                            # equivalent full cycle count
         self.capacity_nominal = capacity_nominal                # nominal capacity [MW]
 
@@ -29,27 +30,36 @@ class Battery:
             'soc': [],
             'c_rate': []
         }
+        self.accumulated_losses = 0
 
-    #   energy [pu]
-    #   power [pu]
+    #   energy [MWh]
+    #   power [MWh]
     #   dt [s]
     def execute_step(self, energy, power, dt):
         net_energy = 0
+        net_power = 0
 
         # Charging
         if energy < 0:
-            net_energy = -energy * self.eta_char
+            net_energy = energy * self.eta_char
+            net_power = power * self.eta_char
 
         # Discharging
         elif energy > 0:
-            net_energy = -energy / self.eta_disc
-
-        # self discharge
-        net_energy -= dt * self.eta_self_disc
+            net_energy = energy / self.eta_disc
+            net_power = power / self.eta_char
 
         pu_energy = net_energy / self.capacity_nominal
-        self.soc += pu_energy
-        self.track_cycles(pu_energy, power / self.capacity_nominal)
+
+        # self discharge
+        # neglect power, as self discharge is internal
+        pu_energy += dt * self.eta_self_disc_s
+
+        self.soc -= pu_energy
+        self.track_cycles(-pu_energy, power / self.capacity_nominal)
+        self.accumulated_losses -= energy - pu_energy * self.capacity_nominal   # positive value
+
+        return net_energy, net_power
 
     def track_cycles(self, pu_energy, c_rate):
         # Basic equivalent full cycle method:
@@ -76,7 +86,6 @@ class Battery:
             pass
 
         # (2) Sign change of load (from charge to discharge or vice versa);
-
         elif np.sign(c_rate) != np.sign(self.current_cycle['c_rate'][0]):
             self.add_half_cycle()
             self.current_cycle['soc'].append(self.soc)
