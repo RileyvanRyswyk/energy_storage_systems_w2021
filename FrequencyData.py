@@ -26,11 +26,11 @@ class FrequencyData:
         self.time_step = 0      # data time step in seconds
 
         if data_src == self.PQ_DATA:
-            self.load_pq_data()
+            self.load_pq_data(self.PQ_DATA)
         elif data_src == self.DTU_DATA:
             self.load_dtu_data()
         else:
-            raise "Invalid data source provided"
+            self.load_pq_data(data_src)
 
         # self.compute_delta_f()
 
@@ -38,10 +38,10 @@ class FrequencyData:
         self.df.info(verbose=False, memory_usage="deep")
         print(f'Frequencies range between {self.df["freq"].min():.3f} and {self.df["freq"].max():.3f}')
 
-    def load_pq_data(self):
+    def load_pq_data(self, file_path):
         self.time_step = 1  # data at 1 second intervals
         self.df = pd.read_csv(
-            self.PQ_DATA,
+            file_path,
             names=["date", "time", "freq"],
             usecols=[0, 1, 3],
             parse_dates={"datetime": ["date", "time"]},
@@ -93,7 +93,7 @@ class FrequencyData:
         sns.displot(data=self.df, x="freq", kde=True, bins=200)
         plt.show()
 
-    def get_data_subset(self, duration=None, offset=timedelta()):
+    def get_data_subset(self, duration=None, offset=timedelta(), dt=1):
         start_date = self.df.first_valid_index() + offset
         last_date = self.df.last_valid_index()
 
@@ -110,7 +110,8 @@ class FrequencyData:
             end_date = last_date
 
         # Filter to desired date range
-        return self.df.loc[start_date:end_date]
+        filtered_df = self.df.loc[start_date:end_date]
+        return filtered_df.resample("{}S".format(dt)).mean()
 
     # def plot_energy(self, duration=None, offset=timedelta()):
     #     start_date = self.df.first_valid_index() + offset

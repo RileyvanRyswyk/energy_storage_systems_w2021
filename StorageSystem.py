@@ -6,6 +6,7 @@ import numpy as np
 
 from Battery import Battery
 from Transaction import Transaction
+from Timer import Timer
 
 
 class StorageSystem:
@@ -22,11 +23,11 @@ class StorageSystem:
     TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
     P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
 
-    def __init__(self, battery=Battery(), p_market=1, p_max=1.25):
-        self.battery = battery      # Battery class
-        self.p_market = p_market    # marketable power [MW]
-        self.p_max = p_max          # maximum power [MW]
-        self.soc_target = 0.5
+    def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5):
+        self.battery = battery          # Battery class
+        self.p_market = p_market        # marketable power [MW]
+        self.p_max = p_max              # maximum power [MW]
+        self.soc_target = soc_target    # target SOC [%/100]
 
         # maximum allowed state of charge in normal state [%/100]
         self.soc_max = (battery.capacity_nominal - self.ALERT_DURATION * p_market) / battery.capacity_nominal
@@ -83,6 +84,9 @@ class StorageSystem:
     # t  : current timestamp [datetime]
     # dt : time delta [s]
     def execute_step(self, freq, t, dt=1):
+        t1 = Timer('ss')
+        t2 = Timer('batt')
+        t1.start()
         df = freq - self.F_NOMINAL
         self.df_recent.append(df)
 
@@ -96,9 +100,13 @@ class StorageSystem:
 
         # Convert to energy units in hours
         e = (p_batt * dt / 3600)
+        t1.stop()
 
+        t2.start()
         e_batt_act, p_batt_act = self.battery.execute_step(e, p_batt, dt)
+        t2.stop()
 
+        t1.start()
         # store results from this step
         self.sim_data['t'][self.sim_index] = t
         self.sim_data['freq'][self.sim_index] = freq
@@ -109,6 +117,7 @@ class StorageSystem:
         self.sim_data['p_soc_trans'][self.sim_index] = p_soc_trans
         self.sim_data['batt_soc'][self.sim_index] = self.battery.soc
         self.sim_index += 1
+        t1.stop()
 
     # Compute the change in state of charge due to scheduled transactions
     # positive transactions -> sell power
