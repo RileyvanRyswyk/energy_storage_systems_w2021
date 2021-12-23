@@ -32,6 +32,27 @@ class Battery:
         }
         self.accumulated_losses = 0
 
+    # compare batteries to each other for equivalent parameters (floats only)
+    def __eq__(self, other):
+        if not isinstance(other, Battery):
+            raise NotImplementedError
+
+        # examine only float parameters
+        for attr in self.__dict__.keys():
+            value = getattr(self, attr)
+            if type(value) in [float, np.float64]:
+                if getattr(other, attr) != value:
+                    return False
+        return True
+
+    def reset(self):
+        self.soc = self.starting_soc
+        self.cycles['cycle_depth'] = []
+        self.cycles['c_rate'] = []
+        self.current_cycle['soc'] = []
+        self.current_cycle['c_rate'] = []
+        self.accumulated_losses = 0
+
     #   energy [MWh]
     #   power [MWh]
     #   dt [s]

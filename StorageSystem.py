@@ -6,7 +6,6 @@ import numpy as np
 
 from Battery import Battery
 from Transaction import Transaction
-from Timer import Timer
 
 
 class StorageSystem:
@@ -22,12 +21,14 @@ class StorageSystem:
     TRANSACTION_DURATION = 0.25     # duration of transaction [h]
     TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
     P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
+    ENERGY_BUYING_PRICE = 500       # assumed cost to buy on intraday market [eur/MWh]
+    ENERGY_SELLING_PRICE = 250      # assumed cost to sell on intraday market [eur/MWh]
+    CAPACITY_SELLING_PRICE = 27/4   # assumed clearing price for 1h FCR product [eur/MW]
 
-    def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5):
+    def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5, sell_trigger=1, buy_trigger=0):
         self.battery = battery          # Battery class
         self.p_market = p_market        # marketable power [MW]
         self.p_max = p_max              # maximum power [MW]
-        self.soc_target = soc_target    # target SOC [%/100]
 
         # maximum allowed state of charge in normal state [%/100]
         self.soc_max = (battery.capacity_nominal - self.ALERT_DURATION * p_market) / battery.capacity_nominal
@@ -39,10 +40,15 @@ class StorageSystem:
         energy_transaction_delay = self.TRANSACTION_DELAY * self.P_MAX_CONST_DEV * self.p_market
 
         # SOC when a sell transaction should be initiated to maintain SOC within nominal limits during normal operation
-        self.soc_sell_trigger = self.soc_max - energy_transaction_delay / self.battery.capacity_nominal
+        max_sell_trigger = self.soc_max - energy_transaction_delay / self.battery.capacity_nominal
+        self.soc_sell_trigger = min(max(0.5, sell_trigger), max(0.5, max_sell_trigger))
 
         # SOC when a buy transaction should be initiated to maintain SOC within nominal limits during normal operation
-        self.soc_buy_trigger = self.soc_min + energy_transaction_delay / self.battery.capacity_nominal
+        min_buy_trigger = self.soc_min + energy_transaction_delay / self.battery.capacity_nominal
+        self.soc_buy_trigger = max(min(0.5, buy_trigger), min(0.5, min_buy_trigger))
+
+        # target SOC [%/100]
+        self.soc_target = max(min(soc_target, self.soc_sell_trigger), self.soc_buy_trigger)
 
         self.scheduled_transactions = deque()
         self.transaction_archive = []
@@ -54,10 +60,25 @@ class StorageSystem:
         # store data during simulation for plotting later
         self.sim_data = {}
         self.sim_index = 0
+        self.trans_revenue = 0
+        self.fcr_revenue = 0
         self.energy = {
             'deadband': [0, 0],             # pos, neg
             'over_fulfillment': [0, 0]      # pos, neg
         }
+
+    def __eq__(self, other):
+        if not isinstance(other, StorageSystem):
+            raise NotImplementedError
+
+        # examine only float parameters
+        for attr in self.__dict__.keys():
+            value = getattr(self, attr)
+            if type(value) in [float, np.float64]:
+                if getattr(other, attr) != value:
+                    return False
+
+        return self.battery == other.battery
 
     def __str__(self):
         dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
@@ -69,14 +90,25 @@ class StorageSystem:
         self.sim_index = 0
         self.sim_data = {
             't': np.zeros(n_data_pts, dtype='datetime64[s]'),
-            'freq': np.zeros(n_data_pts, dtype=np.float64),
-            'df': np.zeros(n_data_pts, dtype=np.float64),
-            'p_batt': np.zeros(n_data_pts, dtype=np.float64),
-            'p_fcr': np.zeros(n_data_pts, dtype=np.float64),
-            'p_soc_fcr': np.zeros(n_data_pts, dtype=np.float64),
-            'p_soc_trans': np.zeros(n_data_pts, dtype=np.float64),
-            'batt_soc': np.zeros(n_data_pts, dtype=np.float64),
+            'freq': np.zeros(n_data_pts, dtype=np.float32),
+            'df': np.zeros(n_data_pts, dtype=np.float32),
+            'p_batt': np.zeros(n_data_pts, dtype=np.float32),
+            'p_fcr': np.zeros(n_data_pts, dtype=np.float32),
+            'p_soc_fcr': np.zeros(n_data_pts, dtype=np.float32),
+            'p_soc_trans': np.zeros(n_data_pts, dtype=np.float32),
+            'batt_soc': np.zeros(n_data_pts, dtype=np.float32),
         }
+
+    def reset(self):
+        self.init_sim_data(self.sim_data['t'].size)
+        self.energy['deadband'] = [0, 0]
+        self.energy['over_fulfillment'] = [0, 0]
+        self.df_recent.clear()
+        self.scheduled_transactions.clear()
+        self.transaction_archive.clear()
+        self.battery.reset()
+        self.trans_revenue = 0
+        self.fcr_revenue = 0
 
     # Execute one time step of the storage system simulation
     #
@@ -84,9 +116,6 @@ class StorageSystem:
     # t  : current timestamp [datetime]
     # dt : time delta [s]
     def execute_step(self, freq, t, dt=1):
-        t1 = Timer('ss')
-        t2 = Timer('batt')
-        t1.start()
         df = freq - self.F_NOMINAL
         self.df_recent.append(df)
 
@@ -100,13 +129,9 @@ class StorageSystem:
 
         # Convert to energy units in hours
         e = (p_batt * dt / 3600)
-        t1.stop()
 
-        t2.start()
         e_batt_act, p_batt_act = self.battery.execute_step(e, p_batt, dt)
-        t2.stop()
 
-        t1.start()
         # store results from this step
         self.sim_data['t'][self.sim_index] = t
         self.sim_data['freq'][self.sim_index] = freq
@@ -117,7 +142,6 @@ class StorageSystem:
         self.sim_data['p_soc_trans'][self.sim_index] = p_soc_trans
         self.sim_data['batt_soc'][self.sim_index] = self.battery.soc
         self.sim_index += 1
-        t1.stop()
 
     # Compute the change in state of charge due to scheduled transactions
     # positive transactions -> sell power
@@ -137,7 +161,6 @@ class StorageSystem:
     # positive -> deliver power
     # negative -> consume power
     def compute_net_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans, dt):
-
         p_fcr = self.compute_fcr_power(df)
 
         # active energy management via allowed FCR power manipulation
@@ -156,13 +179,18 @@ class StorageSystem:
                 p_soc = -p_fcr
                 self.energy['deadband'][1 * (p_fcr < 0)] -= p_soc * dt / 3600
 
-            # TODO activation delay
 
         return p_fcr, p_soc
 
     def compute_fcr_power(self, df):
         # Formula 3.6 of PQ Bedingungen (page 58, 1736)
-        return -np.clip(df / self.MAX_DELTA_F, -1, 1) * self.p_market
+        if type(df) is float:
+            # np.clip was very slow for single floats!
+            p = -df / self.MAX_DELTA_F
+            return max(-1, min(1, p)) * self.p_market
+        else:
+            return -np.clip(df / self.MAX_DELTA_F, -1, 1) * self.p_market
+
 
     def manage_soc_trans(self, t, delta_soc):
         p = 0
@@ -218,6 +246,15 @@ class StorageSystem:
                 duration=timedelta(hours=self.TRANSACTION_DURATION),
                 power=-(self.p_max - self.p_market)
             ))
+
+    def estimate_costs(self):
+        sold, bought = self.get_total_trans_volume()
+        dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
+
+        self.trans_revenue = sold * self.ENERGY_SELLING_PRICE - bought * self.ENERGY_BUYING_PRICE
+        self.fcr_revenue = self.p_market * np.floor(dt / np.timedelta64(1, 'h')) * self.CAPACITY_SELLING_PRICE
+
+        return self.fcr_revenue, self.trans_revenue
 
     def get_total_trans_volume(self):
         sold = 0

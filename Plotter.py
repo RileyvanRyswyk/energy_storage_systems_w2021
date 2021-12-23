@@ -15,7 +15,7 @@ VIOLET = '#661D98'
 AMBER = '#F5B14C'
 
 
-def plot_time_curves(ss):
+def plot_time_curves(ss, save_fig=False):
 
     n_plots = 5
     fig, axs = plt.subplots(n_plots, 1, constrained_layout=True, figsize=(8, 2*n_plots))
@@ -55,14 +55,16 @@ def plot_time_curves(ss):
 
     # 5. SOC
     n += 1
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['batt_soc'], label='SOC')
+    axs[n].plot(ss.sim_data['t'], ss.sim_data['batt_soc'], label='SOC', linewidth=0.75)
     axs[n].set_ylabel('SOC [%]')
     axs[n].set_ylim((0, 1))
     axs[n].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=1))
     axs[n].hlines([ss.soc_max, ss.soc_min], ss.sim_data['t'][0], ss.sim_data['t'][-1],
-                  color=PURPLE, linestyles='dashed', alpha=0.5, label='SOC limits')
+                  color=PURPLE, linestyles='dashed', alpha=0.8, label='SOC limits')
     axs[n].hlines([ss.soc_sell_trigger, ss.soc_buy_trigger], ss.sim_data['t'][0], ss.sim_data['t'][-1],
-                  color=GREEN, linestyles='dashdot', alpha=0.5, label='Trade triggers')
+                  color=GREEN, linestyles='dashdot', alpha=0.8, label='Trade triggers')
+    axs[n].hlines([ss.soc_target], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+                  color=AMBER, linestyles='dotted', alpha=0.8, label='SOC Target')
 
     # Put a legend to the right of the current axis
     axs[n].legend(loc='center left', bbox_to_anchor=(1, 0.5))
@@ -81,11 +83,24 @@ def plot_time_curves(ss):
         axs[nn].grid(True, which='both')
         axs[nn].yaxis.set_label_coords(-0.1, 0.5)
 
-    plt.show()
+    if save_fig:
+        filename = 'figures/time_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+            ss.battery.capacity_nominal,
+            ss.soc_sell_trigger - 0.5,
+            ss.battery.eta_char,
+            ss.battery.eta_disc,
+            ss.battery.eta_self_disc_s,
+            ss.soc_target,
+            ss.TRANSACTION_DELAY
+        )
+        plt.savefig(filename + '.svg', dpi=150, format='svg')
+        plt.savefig(filename + '.png', dpi=150, format='png')
+    else:
+        plt.show()
 
 
 # https://matplotlib.org/stable/gallery/statistics/hist.html?highlight=2d%20hist
-def plot_rel_freq_data(ss):
+def plot_rel_freq_data(ss, save_fig=False):
     fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
     fig.suptitle('Battery Statistics: {}'.format(ss))
 
@@ -96,7 +111,7 @@ def plot_rel_freq_data(ss):
     ]
     patches = [[], [], []]
 
-    # C_rate vs. Cycle Depth
+    # 1. C_rate vs. Cycle Depth
     # Use weights to compute relative frequencies
     n = 0
     n_bins = 15
@@ -123,16 +138,16 @@ def plot_rel_freq_data(ss):
         bbox={'facecolor': 'white', 'pad': 5, 'edgecolor': (0.85, 0.85, 0.85), 'boxstyle': "Round, pad=0.5"}
     )
 
-    # Energy bar chart
+    # 2. Energy bar chart
     n += 1
     axs[n].set_title('Energy Balance')
     labels = ['Gain (Bought)', 'Loss (Sold)']
-    sold, bought = ss.get_total_trans_volume()
-    net_df = np.average(ss.sim_data['df'])
-    net_power = -ss.compute_fcr_power(net_df)
-    net_energy = net_power * (ss.sim_data['t'][-1] - ss.sim_data['t'][0]) / np.timedelta64(1, 'h')
 
+    # Energy gained or lost through transactions
+    sold, bought = ss.get_total_trans_volume()
     market = np.array([bought, sold])
+
+    # Energy gained (lost) through allowed FCR manipulations
     deadband = np.array([
         ss.energy['deadband'][0],
         -ss.energy['deadband'][1]
@@ -141,8 +156,16 @@ def plot_rel_freq_data(ss):
         ss.energy['over_fulfillment'][0],
         -ss.energy['over_fulfillment'][1]
     ])
+
+    # System losses
     losses = np.array([0, ss.battery.accumulated_losses])
-    net_e = np.array([max(0, net_energy), max(0, -1*net_energy)])
+
+    # The energy delivered for the defined FCR product
+    # Note: positive fcr power -> discharge battery and vice versa
+    fcr_power = ss.compute_fcr_power(ss.sim_data['df'])
+    dt = (ss.sim_data['t'][1] - ss.sim_data['t'][0]) / np.timedelta64(1, 'h')
+    fcr_energy = fcr_power * dt
+    net_e = [-np.sum(fcr_energy[np.where(fcr_energy < 0)]), np.sum(fcr_energy[np.where(fcr_energy > 0)])]
 
     width = 0.3  # the width of the bars
     axs[n].bar(labels, market, width, label='Market')
@@ -166,7 +189,7 @@ def plot_rel_freq_data(ss):
     axs[n].grid(True, axis='y')
     axs[n].legend(loc='upper center')
 
-    # SOC
+    # 3. SOC
     # Use weights to compute relative frequencies
     n += 1
     weights = np.ones_like(ss.sim_data['batt_soc']) / len(ss.sim_data['batt_soc'])
@@ -175,15 +198,30 @@ def plot_rel_freq_data(ss):
     axs[n].set_ylim((0, 0.1))
     axs[n].set_xlabel('Battery SOC [%]')
     axs[n].vlines([ss.soc_max, ss.soc_min], 0, 1,
-                  color=PURPLE, linestyles='dashed', alpha=0.5, label='SOC limits')
+                  color=PURPLE, linestyles='dashed', label='SOC limits')
     axs[n].vlines([ss.soc_sell_trigger, ss.soc_buy_trigger], 0, 1,
-                  color=GREEN, linestyles='dashdot', alpha=0.5, label='Trade triggers')
+                  color=GREEN, linestyles='dashdot', label='Trade triggers')
+    axs[n].vlines([ss.soc_target], 0, 1,
+                  color=AMBER, linestyles='dotted', label='Target SOC')
     axs[n].legend()
     axs[n].grid(True, which='both')
     axs[n].set_ylabel('Relative Frequency')
     axs[n].yaxis.set_major_formatter(PercentFormatter(xmax=1))
 
-    plt.show()
+    if save_fig:
+        filename = 'figures/stats_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+            ss.battery.capacity_nominal,
+            ss.soc_sell_trigger - 0.5,
+            ss.battery.eta_char,
+            ss.battery.eta_disc,
+            ss.battery.eta_self_disc_s,
+            ss.soc_target,
+            ss.TRANSACTION_DELAY
+        )
+        plt.savefig(filename + '.svg', dpi=150, format='svg')
+        plt.savefig(filename + '.png', dpi=150, format='png')
+    else:
+        plt.show()
 
 
 def enable_pretty_plots():
@@ -212,7 +250,8 @@ def enable_pretty_plots():
         'ytick.color': 'dimgrey',
         'ytick.direction': 'out',
         # 'ytick.left': False,
-        'ytick.right': False
+        'ytick.right': False,
+
     })
 
     sns.set_context("notebook", rc={
@@ -221,6 +260,8 @@ def enable_pretty_plots():
         "axes.labelsize": 12,
         'figure.titlesize': "large"
     })
+
+    plt.rcParams['savefig.pad_inches'] = 0.2
 
     color_list = [BLUE, PINK, GREEN, AMBER, PURPLE, VIOLET]
     plt.rcParams['axes.prop_cycle'] = plt.cycler(color=color_list)

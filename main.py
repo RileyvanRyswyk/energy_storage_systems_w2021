@@ -1,10 +1,8 @@
-from datetime import timedelta
-
 from Battery import Battery
 from FrequencyData import FrequencyData
 from StorageSystem import StorageSystem
-from Timer import Timer
 import Plotter
+import optimize
 
 
 def simulate_storage(duration):
@@ -18,7 +16,6 @@ def simulate_storage(duration):
     battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
     ss = StorageSystem(battery, p_market=5, p_max=6.25, soc_target=0.6)
 
-    # add empty rows for simulation results
     ss.init_sim_data(len(data))
     current_day = None
     for row in data.itertuples(index=True):
@@ -33,8 +30,8 @@ def simulate_storage(duration):
 
     Plotter.plot_time_curves(ss)
     Plotter.plot_rel_freq_data(ss)
-    print(Timer.timers)
 
 
 if __name__ == "__main__":
-    simulate_storage(duration=timedelta(days=1))
+    # simulate_storage(duration=timedelta(days=1))
+    optimize.optimize_configurations()
