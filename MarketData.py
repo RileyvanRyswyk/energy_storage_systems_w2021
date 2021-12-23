@@ -1,3 +1,7 @@
+import datetime
+import re
+
+import numpy as np
 import pandas as pd
 import glob
 
@@ -29,10 +33,20 @@ def load_data(file_path):
 
 
 def map_market_data(df):
+    start = np.zeros(len(df), dtype=datetime.time)
+    end = np.zeros(len(df), dtype=datetime.time)
+
+    for index, product_name in enumerate(df["product"]):
+        p = re.compile(r'NEGPOS_(\d+)_(\d+)')
+        start_hour, end_hour = p.match(product_name).groups()
+
+        start[index] = df["date"].iloc[index] + datetime.timedelta(hours=int(start_hour))
+        end[index] = df["date"].iloc[index] + datetime.timedelta(hours=int(end_hour))
+
     d = {
-        'start':    [],     # start time of product, datetime() object
-        'end':      [],     # end time of product, datetime() object
-        'price':    []      # price of product
+        'start':    start,                  # start time of product, datetime() object
+        'end':      end,                    # end time of product, datetime() object
+        'price':    df["price"].values      # price of product
     }
 
     return pd.DataFrame(data=d)

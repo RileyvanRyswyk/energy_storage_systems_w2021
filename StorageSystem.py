@@ -24,6 +24,7 @@ class StorageSystem:
     ENERGY_BUYING_PRICE = 500       # assumed cost to buy on intraday market [eur/MWh]
     ENERGY_SELLING_PRICE = 250      # assumed cost to sell on intraday market [eur/MWh]
     CAPACITY_SELLING_PRICE = 27/4   # assumed clearing price for 1h FCR product [eur/MW]
+    FCR_PRODUCT_LENGTH = 4          # length of FCR Product [hours]
 
     def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5, sell_trigger=1, buy_trigger=0):
         self.battery = battery          # Battery class
@@ -60,11 +61,16 @@ class StorageSystem:
         # store data during simulation for plotting later
         self.sim_data = {}
         self.sim_index = 0
-        self.trans_revenue = 0
-        self.fcr_revenue = 0
         self.energy = {
             'deadband': [0, 0],             # pos, neg
             'over_fulfillment': [0, 0]      # pos, neg
+        }
+
+        # FCR market data
+        self.fcr_market_data = None
+        self.fcr_active = {
+            'current': False,
+            'market_data_index': np.array([])
         }
 
     def __eq__(self, other):
@@ -85,6 +91,10 @@ class StorageSystem:
         dh = np.round(dt / np.timedelta64(1, 'h'))
         return "{} MW, {} MWh, {} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
             self.p_market, self.battery.capacity_nominal, dh, self.battery.eta_char, self.battery.eta_disc)
+
+    def link_market_data(self, market_data):
+        self.fcr_market_data = market_data
+        self.fcr_active['market_data_index'] = np.zeros((market_data.shape[0],), dtype=bool)
 
     def init_sim_data(self, n_data_pts):
         self.sim_index = 0
@@ -107,8 +117,11 @@ class StorageSystem:
         self.scheduled_transactions.clear()
         self.transaction_archive.clear()
         self.battery.reset()
-        self.trans_revenue = 0
-        self.fcr_revenue = 0
+        self.fcr_market_data = None
+        self.fcr_active = {
+            'current': False,
+            'market_data_index': np.array([])
+        }
 
     # Execute one time step of the storage system simulation
     #
@@ -119,17 +132,21 @@ class StorageSystem:
         df = freq - self.F_NOMINAL
         self.df_recent.append(df)
 
-        # FCR power (product);
-        # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
-        delta_soc_sch_trans = self.compute_scheduled_delta_soc(t)
-        p_soc_trans = self.manage_soc_trans(t, delta_soc_sch_trans)
-        p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans, dt)
+        # SOC management via transactions
+        delta_soc_sch_trans, p_soc_trans = self.manage_soc_trans(t)
 
-        p_batt = (p_fcr + p_soc_fcr + p_soc_trans)
+        if self.is_fcr_active(t):
+            # FCR power (product);
+            # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
+            p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans, dt)
+            p_batt = (p_fcr + p_soc_fcr + p_soc_trans)
+        else:
+            p_batt = p_soc_trans
+            p_fcr = 0
+            p_soc_fcr = 0
 
         # Convert to energy units in hours
         e = (p_batt * dt / 3600)
-
         e_batt_act, p_batt_act = self.battery.execute_step(e, p_batt, dt)
 
         # store results from this step
@@ -146,16 +163,48 @@ class StorageSystem:
     # Compute the change in state of charge due to scheduled transactions
     # positive transactions -> sell power
     # negative transactions -> buy power
-    def compute_scheduled_delta_soc(self, t):
-        # find energy of currently schedule transactions
+    def manage_soc_trans(self, t):
+        # 1a. find energy of currently schedule transactions
+        # 1b. find power of active transactions - should only be one
         energy = 0
+        power = 0
         for tran in self.scheduled_transactions:
             remaining_hours = min(tran.end_time - t, tran.end_time - tran.start_time) / timedelta(hours=1)
             energy += remaining_hours * tran.power
             if remaining_hours < 0:
                 raise "Transaction not properly archived!"
+            if t in tran:
+                power += tran.power
 
-        return -energy / self.battery.capacity_nominal
+        # change in battery SOC based on future transactions
+        delta_soc = -energy / self.battery.capacity_nominal
+
+        # 2. At 15 min intervals,
+        #   a. archive old transactions
+        #   b. check if a new transaction is needed!
+        if t == ceil_dt_15min(t):
+            self.archive_transactions(t)
+            self.create_transaction(t, delta_soc)
+
+        return delta_soc, power
+
+    def is_fcr_active(self, t):
+        if self.fcr_market_data is not None:
+            if ceil_dt_h(t, self.FCR_PRODUCT_LENGTH) == t:
+                start_mask = np.where(self.fcr_market_data['start'] <= t)
+                end_mask = np.where(self.fcr_market_data['end'] > t)
+                mask = np.intersect1d(start_mask, end_mask)
+                if mask.size == 0:
+                    raise Exception('Missing market data for {}'.format(t))
+                elif mask.size > 1:
+                    raise Exception('Duplicate market data for {}'.format(t))
+                else:
+                    self.fcr_active['current'] = True
+                    self.fcr_active['market_data_index'][mask[0]] = True
+            else:
+                return self.fcr_active['current']
+
+        return True
 
     # Compute the change in state of charge due to scheduled transactions
     # positive -> deliver power
@@ -179,7 +228,6 @@ class StorageSystem:
                 p_soc = -p_fcr
                 self.energy['deadband'][1 * (p_fcr < 0)] -= p_soc * dt / 3600
 
-
         return p_fcr, p_soc
 
     def compute_fcr_power(self, df):
@@ -190,26 +238,6 @@ class StorageSystem:
             return max(-1, min(1, p)) * self.p_market
         else:
             return -np.clip(df / self.MAX_DELTA_F, -1, 1) * self.p_market
-
-
-    def manage_soc_trans(self, t, delta_soc):
-        p = 0
-
-        # 1. check for an active transaction (i.e. power delivery)
-        # should only be one active transaction at a time!
-        for tran in self.scheduled_transactions:
-            if t in tran:
-                p = tran.power
-                break
-
-        # 2. At 15 min intervals,
-        #   a. archive old transactions
-        #   b. check if a new transaction is needed!
-        if t == ceil_dt(t):
-            self.archive_transactions(t)
-            self.create_transaction(t, delta_soc)
-
-        return p
 
     def archive_transactions(self, t):
         # find expired transactions
@@ -247,14 +275,24 @@ class StorageSystem:
                 power=-(self.p_max - self.p_market)
             ))
 
-    def estimate_costs(self):
+    def compute_financials(self):
+        financials = {
+            'revenue': {},
+            'costs': {}
+        }
         sold, bought = self.get_total_trans_volume()
-        dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
 
-        self.trans_revenue = sold * self.ENERGY_SELLING_PRICE - bought * self.ENERGY_BUYING_PRICE
-        self.fcr_revenue = self.p_market * np.floor(dt / np.timedelta64(1, 'h')) * self.CAPACITY_SELLING_PRICE
+        financials['revenue']['transactions'] = sold * self.ENERGY_SELLING_PRICE
+        financials['costs']['transactions'] = bought * self.ENERGY_BUYING_PRICE
 
-        return self.fcr_revenue, self.trans_revenue
+        financials['revenue']['fcr'] = np.sum(
+            self.fcr_market_data['price'].iloc[np.where(self.fcr_active['market_data_index'])]
+        )
+
+        # dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
+        # self.fcr_revenue = self.p_market * np.floor(dt / np.timedelta64(1, 'h')) * self.CAPACITY_SELLING_PRICE
+
+        return financials
 
     def get_total_trans_volume(self):
         sold = 0
@@ -266,12 +304,24 @@ class StorageSystem:
                 bought += transaction.power
         return sold * self.TRANSACTION_DURATION, -bought * self.TRANSACTION_DURATION
 
+
 # https://stackoverflow.com/questions/13071384/ceil-a-datetime-to-next-quarter-of-an-hour
 # round datetime to next 15 mins
-def ceil_dt(dt):
+def ceil_dt_15min(dt):
     # how many secs have passed this hour
     nsecs = dt.minute * 60 + dt.second
     # number of seconds to next quarter hour mark
     delta = math.ceil(nsecs / 900) * 900 - nsecs
     # time + number of seconds to quarter hour mark.
+    return dt + timedelta(seconds=delta)
+
+
+def ceil_dt_h(dt, num_hours):
+    # how many secs have passed since last cutoff
+    nsecs = (dt.hour % num_hours) * 3600 + dt.minute * 60 + dt.second
+    # number of seconds in period
+    nsecs_period = 3600 * num_hours
+    # number of seconds to next cutoff
+    delta = math.ceil(nsecs / nsecs_period) * nsecs_period - nsecs
+    # time + number of seconds to cutoff.
     return dt + timedelta(seconds=delta)

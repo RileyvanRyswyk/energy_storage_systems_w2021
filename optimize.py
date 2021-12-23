@@ -8,6 +8,7 @@ import tqdm
 
 from Battery import Battery
 from FrequencyData import FrequencyData
+from MarketData import MarketData
 from StorageSystem import StorageSystem
 import Plotter
 
@@ -17,13 +18,13 @@ DT = 5          # seconds
 
 # optimize configurations
 def optimize_configurations():
-    systems = create_configurations()
-    valid_systems = validate_configurations(systems)
+    # systems = create_configurations()
+    # valid_systems = validate_configurations(systems)
 
-    # battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
-    # ss = StorageSystem(battery=battery, p_market=5, p_max=6.25, soc_target=0.5)
-    #
-    # results = run_economic_simulation([ss])
+    battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
+    ss = StorageSystem(battery=battery, p_market=5, p_max=6.25, soc_target=0.5)
+
+    results = run_economic_simulation([ss])
 
 
 def create_configurations():
@@ -76,7 +77,7 @@ def validate_configurations(systems):
         duration=duration,
         dt=DT,
         storage_systems=systems,
-        plot=False
+        plot=True
     )
 
     valid_systems = []
@@ -96,8 +97,13 @@ def run_economic_simulation(systems):
     if DEV:
         duration = timedelta(days=2)
 
+    # market data is too small to use shared memory
+    md = MarketData()
+    for system in systems:
+        system.link_market_data(md.df)
+
     results = run_parallel_simulations(
-        data_src='data/202101_Frequenz.csv',
+        data_src='data/202111_Frequenz.csv',
         duration=duration,
         dt=DT,
         storage_systems=systems,
@@ -109,9 +115,9 @@ def run_economic_simulation(systems):
 
 
 def run_parallel_simulations(data_src, duration, dt, storage_systems, plot=False, cost=False):
-    index_shm, index_arr, freq_shm, freq_arr = load_sharable_block(data_src=data_src, duration=duration, dt=dt)
+    shm_links, freq = load_sharable_block(data_src=data_src, duration=duration, dt=dt)
 
-    systems = map(lambda ss: (index_shm.name, freq_shm.name, dt, index_arr.size, ss, plot, cost), storage_systems)
+    systems = map(lambda ss: (freq, dt, ss, plot, cost), storage_systems)
 
     try:
         with Pool(processes=min(12, cpu_count())) as pool:
@@ -124,11 +130,10 @@ def run_parallel_simulations(data_src, duration, dt, storage_systems, plot=False
 
             # res = pool.starmap_async(simulate_storage_config, systems, callback=log_result)
             # print("Final result: ", res.get())
-    except BaseException as err:
-        index_shm.close()
-        index_shm.unlink()
-        freq_shm.close()
-        freq_shm.unlink()
+    except Exception as err:
+        for shm_link in shm_links:
+            shm_link.close()
+            shm_link.unlink()
 
         raise f"Unexpected {err=}, {type(err)=}"
 
@@ -142,20 +147,19 @@ def log_result(result):
 def load_sharable_block(data_src, duration, dt):
     fd = FrequencyData(data_src)
     data = fd.get_data_subset(duration=duration, dt=dt)
-
     index = data.index.to_numpy()
     freq = data['freq'].to_numpy()
 
     index_shm, index_arr = create_shared_block(index, 'datetime64[s]')
-    freq_shm, freq_arr = create_shared_block(freq, np.float32)
+    freq_shm, _ = create_shared_block(freq, np.float32)
+
+    freq_info = {'size': index_arr.size, 'index': index_shm.name, 'freq': freq_shm.name}
+    shm_links = [index_shm, freq_shm]
 
     # clean up memory
-    del index
-    del freq
-    del data
-    del fd
+    del index, freq, data, fd
 
-    return index_shm, index_arr, freq_shm, freq_arr
+    return shm_links, freq_info
 
 
 def create_shared_block(src_array, dtype):
@@ -170,16 +174,16 @@ def simulate_storage_config_star(args):
     return simulate_storage_config(*args)
 
 
-def simulate_storage_config(index_name, freq_name, dt, n_pts, ss, plot=False, cost=False):
+def simulate_storage_config(freq_info, dt, ss, plot=False, cost=False):
 
-    index_shm = shared_memory.SharedMemory(name=index_name)
-    freq_shm = shared_memory.SharedMemory(name=freq_name)
-    index = np.ndarray((n_pts,), dtype='datetime64[s]', buffer=index_shm.buf)
-    freq = np.ndarray((n_pts,), dtype=np.float32, buffer=freq_shm.buf)
+    index_shm = shared_memory.SharedMemory(name=freq_info['index'])
+    freq_shm = shared_memory.SharedMemory(name=freq_info['freq'])
+    index = np.ndarray((freq_info['size'],), dtype='datetime64[s]', buffer=index_shm.buf)
+    freq = np.ndarray((freq_info['size'],), dtype=np.float32, buffer=freq_shm.buf)
 
-    ss.init_sim_data(n_pts)
+    ss.init_sim_data(freq.size)
     current_day = None
-    for i in range(0, n_pts):
+    for i in range(0, freq.size):
         t1 = pd.Timestamp(index[i])
         ss.execute_step(freq=freq[i], dt=dt, t=t1)
         if current_day is None or current_day != t1.date().day:
@@ -187,7 +191,7 @@ def simulate_storage_config(index_name, freq_name, dt, n_pts, ss, plot=False, co
             # print("Currently evaluating {}".format(t1.date()))
 
     if cost:
-        ss.estimate_costs()
+        ss.compute_financials()
 
     if plot:
         Plotter.plot_time_curves(ss, save_fig=True)
