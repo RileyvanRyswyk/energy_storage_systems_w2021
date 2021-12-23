@@ -3,3 +3,4 @@ matplotlib
 seaborn
 numpy
 tqdm
+openpyxl
