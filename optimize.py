@@ -1,3 +1,4 @@
+import json
 import math
 from datetime import timedelta
 from multiprocessing import cpu_count, Pool, shared_memory
@@ -9,22 +10,26 @@ import tqdm
 from Battery import Battery
 from FrequencyData import FrequencyData
 from MarketData import MarketData
-from StorageSystem import StorageSystem
+import StorageSystem
 import Plotter
 
-DEV = True      # limit data for faster processing
+DEV = False     # limit data for faster processing
 DT = 5          # seconds
 
 
 # optimize configurations
 def optimize_configurations():
-    # systems = create_configurations()
+    systems = create_configurations()
     # valid_systems = validate_configurations(systems)
 
-    battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
-    ss = StorageSystem(battery=battery, p_market=5, p_max=6.25, soc_target=0.5)
+    # battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
+    # ss = StorageSystem.StorageSystem(battery=battery, p_market=5, p_max=6.25, soc_target=0.5)
 
-    results = run_economic_simulation([ss])
+    results, financials = run_economic_simulation(systems)
+
+    Plotter.plot_revenues(results, financials, save_fig=True, path='figures/')
+
+    print(financials)
 
 
 def create_configurations():
@@ -45,7 +50,7 @@ def create_configurations():
         for soc_target in soc_targets:
             for trigger in triggers:
                 battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=capacity)
-                ss = StorageSystem(
+                ss = StorageSystem.StorageSystem(
                     battery=battery,
                     p_market=p_market,
                     p_max=p_max,
@@ -77,7 +82,7 @@ def validate_configurations(systems):
         duration=duration,
         dt=DT,
         storage_systems=systems,
-        plot=True
+        plot_path='figures/validation/'
     )
 
     valid_systems = []
@@ -100,27 +105,28 @@ def run_economic_simulation(systems):
     # market data is too small to use shared memory
     md = MarketData()
     for system in systems:
-        system.link_market_data(md.df)
+        system.link_market_data(md)
 
     results = run_parallel_simulations(
         data_src='data/202111_Frequenz.csv',
         duration=duration,
         dt=DT,
         storage_systems=systems,
-        plot=True,
-        cost=True
+        plot_path='figures/economic/'
     )
 
-    return results
+    financials = list(map(lambda ss: ss.compute_financials(), results))
+
+    return results, financials
 
 
-def run_parallel_simulations(data_src, duration, dt, storage_systems, plot=False, cost=False):
+def run_parallel_simulations(data_src, duration, dt, storage_systems, plot_path=None):
     shm_links, freq = load_sharable_block(data_src=data_src, duration=duration, dt=dt)
 
-    systems = map(lambda ss: (freq, dt, ss, plot, cost), storage_systems)
+    systems = map(lambda ss: (freq, dt, ss, plot_path), storage_systems)
 
     try:
-        with Pool(processes=min(12, cpu_count())) as pool:
+        with Pool(processes=min(8, cpu_count())) as pool:
             results = []
             for result in tqdm.tqdm(
                 pool.imap_unordered(simulate_storage_config_star, systems),
@@ -174,7 +180,7 @@ def simulate_storage_config_star(args):
     return simulate_storage_config(*args)
 
 
-def simulate_storage_config(freq_info, dt, ss, plot=False, cost=False):
+def simulate_storage_config(freq_info, dt, ss, plot_path=None):
 
     index_shm = shared_memory.SharedMemory(name=freq_info['index'])
     freq_shm = shared_memory.SharedMemory(name=freq_info['freq'])
@@ -190,12 +196,9 @@ def simulate_storage_config(freq_info, dt, ss, plot=False, cost=False):
             current_day = t1.date().day
             # print("Currently evaluating {}".format(t1.date()))
 
-    if cost:
-        ss.compute_financials()
-
-    if plot:
-        Plotter.plot_time_curves(ss, save_fig=True)
-        Plotter.plot_rel_freq_data(ss, save_fig=True)
+    if plot_path is not None:
+        Plotter.plot_time_curves(ss, save_fig=True, path=plot_path)
+        Plotter.plot_rel_freq_data(ss, save_fig=True, path=plot_path)
 
     index_shm.close()
     freq_shm.close()

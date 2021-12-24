@@ -3,28 +3,29 @@ from collections import deque
 from datetime import timedelta
 
 import numpy as np
+import pandas as pd
 
 from Battery import Battery
 from Transaction import Transaction
 
+# TSO parameters
+F_NOMINAL = 50              # Nominal frequency [Hz]
+DEAD_BAND = 0.01            # allowed control dead band [Hz]
+MAX_DELTA_F = 0.2           # maximum frequency deviation for full power [Hz]
+MAX_OVER_FULFILLMENT = 0.2  # maximum over fulfillment allowed [%/100]
+ALERT_DURATION = 0.5        # duration that full power must be delivered in the alert state [h]
+
+# Related to primary market transactions
+TRANSACTION_DURATION = 0.25     # duration of transaction [h]
+TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
+P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
+ENERGY_BUY_MARKUP = 0.2         # assumed markup to buy on intraday market vs. day-ahead [%/100]
+ENERGY_SELL_MARKDOWN = 0.2      # assumed markdown to sell on intraday market vs. day-ahead [%/100]
+FCR_PRODUCT_LENGTH = 4          # length of FCR Product [hours]
+DA_PRODUCT_LENGTH = 1           # length of day-ahead product [hours], used to estimate intra-day prices
+
 
 class StorageSystem:
-
-    # TSO parameters
-    F_NOMINAL = 50              # Nominal frequency [Hz]
-    DEAD_BAND = 0.01            # allowed control dead band [Hz]
-    MAX_DELTA_F = 0.2           # maximum frequency deviation for full power [Hz]
-    MAX_OVER_FULFILLMENT = 0.2  # maximum over fulfillment allowed [%/100]
-    ALERT_DURATION = 0.5        # duration that full power must be delivered in the alert state [h]
-
-    # Related to primary market transactions
-    TRANSACTION_DURATION = 0.25     # duration of transaction [h]
-    TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
-    P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
-    ENERGY_BUYING_PRICE = 500       # assumed cost to buy on intraday market [eur/MWh]
-    ENERGY_SELLING_PRICE = 250      # assumed cost to sell on intraday market [eur/MWh]
-    CAPACITY_SELLING_PRICE = 27/4   # assumed clearing price for 1h FCR product [eur/MW]
-    FCR_PRODUCT_LENGTH = 4          # length of FCR Product [hours]
 
     def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5, sell_trigger=1, buy_trigger=0):
         self.battery = battery          # Battery class
@@ -32,13 +33,13 @@ class StorageSystem:
         self.p_max = p_max              # maximum power [MW]
 
         # maximum allowed state of charge in normal state [%/100]
-        self.soc_max = (battery.capacity_nominal - self.ALERT_DURATION * p_market) / battery.capacity_nominal
+        self.soc_max = (battery.capacity_nominal - ALERT_DURATION * p_market) / battery.capacity_nominal
 
         # minimum allowed state of charge in normal state [%/100]
-        self.soc_min = self.ALERT_DURATION * p_market / battery.capacity_nominal
+        self.soc_min = ALERT_DURATION * p_market / battery.capacity_nominal
 
         # The amount of energy required to cover the transaction delay period at the maximum assumed constant deviation
-        energy_transaction_delay = self.TRANSACTION_DELAY * self.P_MAX_CONST_DEV * self.p_market
+        energy_transaction_delay = TRANSACTION_DELAY * P_MAX_CONST_DEV * self.p_market
 
         # SOC when a sell transaction should be initiated to maintain SOC within nominal limits during normal operation
         max_sell_trigger = self.soc_max - energy_transaction_delay / self.battery.capacity_nominal
@@ -54,9 +55,9 @@ class StorageSystem:
         self.scheduled_transactions = deque()
         self.transaction_archive = []
 
-        # store last 5 minutes of values (assuming dt = 1)
+        # store last 15 minutes of values (assuming dt = 5)
         # for computing rolling average
-        self.df_recent = deque([0] * 5*60, maxlen=5*60)
+        self.df_recent = deque([0] * 3*60, maxlen=3*60)
 
         # store data during simulation for plotting later
         self.sim_data = {}
@@ -66,12 +67,9 @@ class StorageSystem:
             'over_fulfillment': [0, 0]      # pos, neg
         }
 
-        # FCR market data
-        self.fcr_market_data = None
-        self.fcr_active = {
-            'current': False,
-            'market_data_index': np.array([])
-        }
+        # Market data (FCR & Day-ahead)
+        self.market_data = None
+        self.fcr_active = None
 
     def __eq__(self, other):
         if not isinstance(other, StorageSystem):
@@ -93,8 +91,9 @@ class StorageSystem:
             self.p_market, self.battery.capacity_nominal, dh, self.battery.eta_char, self.battery.eta_disc)
 
     def link_market_data(self, market_data):
-        self.fcr_market_data = market_data
-        self.fcr_active['market_data_index'] = np.zeros((market_data.shape[0],), dtype=bool)
+        self.market_data = market_data
+        # self.fcr_active = pd.DataFrame(0, index=market_data.fcr_df.index, columns=['active_frac'], dtype=float)
+        self.fcr_active = dict.fromkeys(market_data.fcr_df.index, 0.0)
 
     def init_sim_data(self, n_data_pts):
         self.sim_index = 0
@@ -117,11 +116,8 @@ class StorageSystem:
         self.scheduled_transactions.clear()
         self.transaction_archive.clear()
         self.battery.reset()
-        self.fcr_market_data = None
-        self.fcr_active = {
-            'current': False,
-            'market_data_index': np.array([])
-        }
+        self.market_data = None
+        self.fcr_active = None
 
     # Execute one time step of the storage system simulation
     #
@@ -129,13 +125,13 @@ class StorageSystem:
     # t  : current timestamp [datetime]
     # dt : time delta [s]
     def execute_step(self, freq, t, dt=1):
-        df = freq - self.F_NOMINAL
+        df = freq - F_NOMINAL
         self.df_recent.append(df)
 
         # SOC management via transactions
         delta_soc_sch_trans, p_soc_trans = self.manage_soc_trans(t)
 
-        if self.is_fcr_active(t):
+        if self.is_fcr_active(t, dt):
             # FCR power (product);
             # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
             p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans, dt)
@@ -188,21 +184,12 @@ class StorageSystem:
 
         return delta_soc, power
 
-    def is_fcr_active(self, t):
-        if self.fcr_market_data is not None:
-            if ceil_dt_h(t, self.FCR_PRODUCT_LENGTH) == t:
-                start_mask = np.where(self.fcr_market_data['start'] <= t)
-                end_mask = np.where(self.fcr_market_data['end'] > t)
-                mask = np.intersect1d(start_mask, end_mask)
-                if mask.size == 0:
-                    raise Exception('Missing market data for {}'.format(t))
-                elif mask.size > 1:
-                    raise Exception('Duplicate market data for {}'.format(t))
-                else:
-                    self.fcr_active['current'] = True
-                    self.fcr_active['market_data_index'][mask[0]] = True
-            else:
-                return self.fcr_active['current']
+    def is_fcr_active(self, t, dt):
+        if self.market_data is not None:
+            product_start = floor_dt_h(t, FCR_PRODUCT_LENGTH)
+            if product_start not in self.fcr_active:
+                raise Exception('Missing fcr market data for {}'.format(t))
+            self.fcr_active[product_start] += dt / 3600 / FCR_PRODUCT_LENGTH
 
         return True
 
@@ -220,11 +207,11 @@ class StorageSystem:
 
             # 1. over-fulfillment
             if np.sign(soc_error) * np.sign(p_fcr) > 0:
-                p_soc = p_fcr * min(self.MAX_OVER_FULFILLMENT, (self.p_max - np.abs(net_p)) / self.p_market)
+                p_soc = p_fcr * min(MAX_OVER_FULFILLMENT, (self.p_max - np.abs(net_p)) / self.p_market)
                 self.energy['over_fulfillment'][1 * (p_fcr > 0)] -= p_soc * dt / 3600
 
             # 2. dead band
-            elif 0 <= np.abs(df) <= self.DEAD_BAND:
+            elif 0 <= np.abs(df) <= DEAD_BAND:
                 p_soc = -p_fcr
                 self.energy['deadband'][1 * (p_fcr < 0)] -= p_soc * dt / 3600
 
@@ -234,10 +221,10 @@ class StorageSystem:
         # Formula 3.6 of PQ Bedingungen (page 58, 1736)
         if type(df) is float:
             # np.clip was very slow for single floats!
-            p = -df / self.MAX_DELTA_F
+            p = -df / MAX_DELTA_F
             return max(-1, min(1, p)) * self.p_market
         else:
-            return -np.clip(df / self.MAX_DELTA_F, -1, 1) * self.p_market
+            return -np.clip(df / MAX_DELTA_F, -1, 1) * self.p_market
 
     def archive_transactions(self, t):
         # find expired transactions
@@ -255,23 +242,23 @@ class StorageSystem:
     def create_transaction(self, t, delta_soc):
         # TODO transaction size limits
 
-        # est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * self.TRANSACTION_DELAY
-        # est_delta_soc = est_delta_e / self.battery.capacity_nominal
-        est_delta_soc = 0
+        est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * TRANSACTION_DELAY
+        est_delta_soc = est_delta_e / self.battery.capacity_nominal
+        # est_delta_soc = 0
 
         future_soc = self.battery.soc + delta_soc
         est_future_soc = future_soc + est_delta_soc
 
         if max(future_soc, est_future_soc) > self.soc_sell_trigger:
             self.scheduled_transactions.append(Transaction(
-                start_time=t+timedelta(hours=self.TRANSACTION_DELAY),
-                duration=timedelta(hours=self.TRANSACTION_DURATION),
+                start_time=t+timedelta(hours=TRANSACTION_DELAY),
+                duration=timedelta(hours=TRANSACTION_DURATION),
                 power=self.p_max - self.p_market
             ))
         elif min(future_soc, est_future_soc) < self.soc_buy_trigger:
             self.scheduled_transactions.append(Transaction(
-                start_time=t+timedelta(hours=self.TRANSACTION_DELAY),
-                duration=timedelta(hours=self.TRANSACTION_DURATION),
+                start_time=t+timedelta(hours=TRANSACTION_DELAY),
+                duration=timedelta(hours=TRANSACTION_DURATION),
                 power=-(self.p_max - self.p_market)
             ))
 
@@ -280,17 +267,12 @@ class StorageSystem:
             'revenue': {},
             'costs': {}
         }
-        sold, bought = self.get_total_trans_volume()
+        financials['revenue']['transactions'], financials['costs']['transactions'] = self.get_trans_revenue()
 
-        financials['revenue']['transactions'] = sold * self.ENERGY_SELLING_PRICE
-        financials['costs']['transactions'] = bought * self.ENERGY_BUYING_PRICE
-
-        financials['revenue']['fcr'] = np.sum(
-            self.fcr_market_data['price'].iloc[np.where(self.fcr_active['market_data_index'])]
-        )
-
-        # dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
-        # self.fcr_revenue = self.p_market * np.floor(dt / np.timedelta64(1, 'h')) * self.CAPACITY_SELLING_PRICE
+        fcr_unit_revenue = 0
+        for start_time, active_frac in self.fcr_active.items():
+            fcr_unit_revenue += active_frac * self.market_data.fcr_df.at[start_time, 'price']
+        financials['revenue']['fcr'] = round(self.p_market * fcr_unit_revenue, 2)
 
         return financials
 
@@ -302,7 +284,25 @@ class StorageSystem:
                 sold += transaction.power
             else:
                 bought += transaction.power
-        return sold * self.TRANSACTION_DURATION, -bought * self.TRANSACTION_DURATION
+        return sold * TRANSACTION_DURATION, -bought * TRANSACTION_DURATION
+
+    def get_trans_revenue(self):
+        sold = 0
+        bought = 0
+        for transaction in self.transaction_archive:
+            # day ahead data comes in one hour intervals
+            da_product_start = floor_dt_h(transaction.start_time, DA_PRODUCT_LENGTH)
+
+            if da_product_start not in self.market_data.da_df.index:
+                raise Exception('Incomplete day-ahead data: {}'.format(transaction.start_time))
+
+            price = self.market_data.da_df.at[da_product_start, 'price']
+
+            if transaction.power > 0:
+                sold += round(price * transaction.power * TRANSACTION_DURATION * (1 - ENERGY_SELL_MARKDOWN), 2)
+            else:
+                bought -= round(price * transaction.power * TRANSACTION_DURATION * (1 + ENERGY_BUY_MARKUP), 2)
+        return sold, bought
 
 
 # https://stackoverflow.com/questions/13071384/ceil-a-datetime-to-next-quarter-of-an-hour
@@ -325,3 +325,9 @@ def ceil_dt_h(dt, num_hours):
     delta = math.ceil(nsecs / nsecs_period) * nsecs_period - nsecs
     # time + number of seconds to cutoff.
     return dt + timedelta(seconds=delta)
+
+
+def floor_dt_h(dt, num_hours):
+    # how many secs have passed since last cutoff
+    delta = (dt.hour % num_hours) * 3600 + dt.minute * 60 + dt.second
+    return dt - timedelta(seconds=delta)

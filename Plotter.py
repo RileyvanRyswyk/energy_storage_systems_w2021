@@ -3,9 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker
-from matplotlib import colors
-from matplotlib.ticker import PercentFormatter
+from matplotlib import colors, cm
+from matplotlib.ticker import PercentFormatter, LinearLocator
 import seaborn as sns
+
+import StorageSystem
 
 BLUE = '#2CBDFE'
 GREEN = '#47DBCD'
@@ -15,7 +17,7 @@ VIOLET = '#661D98'
 AMBER = '#F5B14C'
 
 
-def plot_time_curves(ss, save_fig=False):
+def plot_time_curves(ss, save_fig=False, path=None):
 
     n_plots = 5
     fig, axs = plt.subplots(n_plots, 1, constrained_layout=True, figsize=(8, 2*n_plots))
@@ -84,23 +86,15 @@ def plot_time_curves(ss, save_fig=False):
         axs[nn].yaxis.set_label_coords(-0.1, 0.5)
 
     if save_fig:
-        filename = 'figures/time_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
-            ss.battery.capacity_nominal,
-            ss.soc_sell_trigger - 0.5,
-            ss.battery.eta_char,
-            ss.battery.eta_disc,
-            ss.battery.eta_self_disc_s,
-            ss.soc_target,
-            ss.TRANSACTION_DELAY
-        )
-        plt.savefig(filename + '.svg', dpi=150, format='svg')
-        plt.savefig(filename + '.png', dpi=150, format='png')
+        filename = 'time' + get_ss_file_name(ss)
+        plt.savefig(path + filename + '.svg', dpi=150, format='svg')
+        plt.savefig(path + filename + '.png', dpi=150, format='png')
     else:
         plt.show()
 
 
 # https://matplotlib.org/stable/gallery/statistics/hist.html?highlight=2d%20hist
-def plot_rel_freq_data(ss, save_fig=False):
+def plot_rel_freq_data(ss, save_fig=False, path=None):
     fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
     fig.suptitle('Battery Statistics: {}'.format(ss))
 
@@ -209,19 +203,71 @@ def plot_rel_freq_data(ss, save_fig=False):
     axs[n].yaxis.set_major_formatter(PercentFormatter(xmax=1))
 
     if save_fig:
-        filename = 'figures/stats_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+        filename = 'stats' + get_ss_file_name(ss)
+        plt.savefig(path + filename + '.svg', dpi=150, format='svg')
+        plt.savefig(path + filename + '.png', dpi=150, format='png')
+    else:
+        plt.show()
+
+
+def plot_revenues(storage_systems, financials, save_fig=False, path=None):
+
+    start_date = np.datetime64(storage_systems[0].sim_data['t'][0], 'D')
+    end_date = np.datetime64(storage_systems[0].sim_data['t'][-1], 'D')
+    p_market = storage_systems[0].p_market
+    fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
+    fig.suptitle('Revenue Evaluation: {} to {}'.format(start_date, end_date))
+
+    axs = [
+        plt.subplot(221),
+        plt.subplot(222),
+        plt.subplot(212)
+    ]
+
+    # 1. Market Revenue (FCR + Intra-day)
+    n = 0
+    x = []
+    y = []
+    for index, ss in enumerate(storage_systems):
+        x.append(ss.battery.capacity_nominal)
+        tot_revenue = np.sum(list(financials[index]['revenue'].values()))
+        tot_costs = np.sum(list(financials[index]['costs'].values()))
+        y.append((tot_revenue - tot_costs) * 1e-3)
+
+    axs[n].scatter(x, y)
+    axs[n].set_title('Market Revenue (FCR + Intra-day)')
+    axs[n].set_xlabel('Battery Capacity [MWh]')
+    axs[n].set_ylabel('[k€]')
+
+    sec_ax_y = axs[n].secondary_yaxis(
+        'right', functions=(lambda r: r / p_market, lambda r: r * p_market))
+    sec_ax_y.set_ylabel('[k€/MWh]')
+
+    # ax.legend()
+    axs[0].grid(True)
+
+    # 2. System Costs
+    # 3. Net Revenue
+    # 4. Expected lifetimes
+
+    if save_fig:
+        filename = 'revenues'
+        plt.savefig(path + filename + '.svg', dpi=150, format='svg')
+        plt.savefig(path + filename + '.png', dpi=150, format='png')
+    else:
+        plt.show()
+
+
+def get_ss_file_name(ss):
+    return '_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
             ss.battery.capacity_nominal,
             ss.soc_sell_trigger - 0.5,
             ss.battery.eta_char,
             ss.battery.eta_disc,
             ss.battery.eta_self_disc_s,
             ss.soc_target,
-            ss.TRANSACTION_DELAY
+            StorageSystem.TRANSACTION_DELAY
         )
-        plt.savefig(filename + '.svg', dpi=150, format='svg')
-        plt.savefig(filename + '.png', dpi=150, format='png')
-    else:
-        plt.show()
 
 
 def enable_pretty_plots():
