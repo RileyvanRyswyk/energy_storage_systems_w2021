@@ -40,8 +40,10 @@ def optimize_configurations():
 
     valid_systems = validate_configurations(systems, duration=duration)
 
-    results = run_economic_simulation(systems, duration=duration)
-    Plotter.plot_summary(results, save_fig=True, path='figures/')
+    results = run_economic_simulation(valid_systems, duration=duration)
+    results.sort()
+
+    Plotter.plot_summary(results, capacities, save_fig=True, path='figures/')
 
 
 def create_configurations(soc_target=0.5, battery_type=None, battery_args=None):
@@ -95,7 +97,8 @@ def validate_configurations(systems, depth=1, duration=None):
     for index, result in enumerate(results):
         if np.min(result.sim_data['batt_soc']) > result.soc_min \
          and np.max(result.sim_data['batt_soc']) < result.soc_max:
-            valid_systems.append(result.reset())
+            result.reset()
+            valid_systems.append(result)
         elif result.soc_sell_trigger > 0.5 + TRAN_TRIGGER_ADJUST:
             result.reset()
             result.soc_sell_trigger -= TRAN_TRIGGER_ADJUST

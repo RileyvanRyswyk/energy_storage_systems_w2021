@@ -213,13 +213,13 @@ def plot_rel_freq_data(ss, save_fig=False, path=None):
         plt.show()
 
 
-def plot_summary(storage_systems, save_fig=False, path=None):
+def plot_summary(storage_systems, capacities, save_fig=False, path=None):
 
     start_date = np.datetime64(storage_systems[0].sim_data['t'][0], 'D')
     end_date = np.datetime64(storage_systems[0].sim_data['t'][-1], 'D')
     p_market = storage_systems[0].p_market
     fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
-    fig.suptitle('Revenue Evaluation: {} to {}'.format(start_date, end_date))
+    fig.suptitle('Revenue Evaluation, Marketable Power = {:.0f} MWh: {} to {}'.format(p_market, start_date, end_date))
 
     axs = [
         plt.subplot(221),
@@ -242,33 +242,37 @@ def plot_summary(storage_systems, save_fig=False, path=None):
         battery_types[battery_type].append((ss, sys_costs, var_financials))
 
     # Generic
-    markers = ['v', 'o', 'h', '*', 'H', '+', 'x', 'D']
+    markers = ['v', 'o', '+', 'h', '*', 'H', 'x', 'D']
     colours = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    hatches = ['', '//', '.', '*', '-', '+', 'x', 'o', 'O', '\\', '|']
+    legend_entries = []
+    n_batt_types = len(battery_types)
+    for bat_type_index, battery_type in enumerate(battery_types.keys()):
+        legend_entries.append(
+            Patch(facecolor=colours[bat_type_index], edgecolor=colours[bat_type_index], label=battery_type)
+        )
 
     # 1. Market Revenue (FCR + Intra-day)
     n = 0
     axs[n].set_title('Annualized Market Revenue (FCR + Intraday)\n (with varying intraday markups vs. day-ahead)')
     axs[n].set_xlabel('Battery Capacity [MWh]')
     axs[n].set_ylabel('Market Rev. [k€]')
+    axs[n].grid(True)
+    axs[n].set_axisbelow(True)
 
-    legend_entries = []
+    sub_legend = []
     for bat_type_index, battery_type in enumerate(battery_types.keys()):
         for system, _, fin_results in battery_types[battery_type]:
             for markup_index, fin_result in enumerate(fin_results):
                 x = system.battery.capacity_nominal
                 y = (fin_result['total']['revenue'] - fin_result['total']['costs']) * 1e-3  # in k€
                 axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[markup_index])
-        legend_entries.append(
-            Patch(facecolor=colours[bat_type_index], edgecolor=colours[bat_type_index], label=battery_type)
-        )
 
     for index, markup_down in enumerate(markups_markdowns):
-        legend_entries.append(lines.Line2D(
+        sub_legend.append(lines.Line2D(
             [0], [0], color='k', marker=markers[index], linewidth=0, label="{:.0%} markup".format(markup_down)
         ))
-
-    axs[n].legend(handles=legend_entries)
-    axs[n].grid(True)
+    axs[n].legend(handles=sub_legend)
 
     # 2. System Costs
     #    Bar chart: Initial investment, additional investment, op & maintenance
@@ -276,29 +280,30 @@ def plot_summary(storage_systems, save_fig=False, path=None):
     axs[n].set_title('System Costs (20 year annuity)')
     axs[n].set_xlabel('Battery Capacity [MWh]')
     axs[n].set_ylabel('Annuity [k€]')
+    sub_legend = []
 
-    legend_entries = []
+    capacity_spread = max(capacities) - min(capacities)
+    dx = capacity_spread * np.linspace(-1/2, 1/2, n_batt_types, endpoint=True) if n_batt_types > 1 else np.array([0])
+    width = 0.5 / n_batt_types / capacity_spread
     for bat_type_index, battery_type in enumerate(battery_types.keys()):
-        x = []
+        x1 = []
         y_capex = []
         y_opex = []
-        y_total = []
         for system, sys_costs, _ in battery_types[battery_type]:
-            x.append(system.battery.capacity_nominal)
+            x1.append(system.battery.capacity_nominal)      # in case not all capacities are available for this type
             y_capex.append((sys_costs['capex']) * 1e-3)     # in k€
             y_opex.append((sys_costs['opex']) * 1e-3)       # in k€
-            y_total.append((sys_costs['total']) * 1e-3)     # in k€
-        axs[n].plot(x, y_capex, c=colours[bat_type_index], marker=markers[0])
-        axs[n].plot(x, y_opex, c=colours[bat_type_index], marker=markers[1])
-        axs[n].plot(x, y_total, c=colours[bat_type_index], marker=markers[2])
-        legend_entries.append(lines.Line2D([0], [0], color=colours[bat_type_index], label=battery_type))
+        x1 = np.array(x1)
+        axs[n].bar(x1 + dx[bat_type_index], y_capex, width, color=colours[bat_type_index], hatch=hatches[0])
+        axs[n].bar(x1 + dx[bat_type_index], y_opex, width,
+                   color=colours[bat_type_index], bottom=y_capex, hatch=hatches[1])
 
-    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[0], linewidth=0, label='CAPEX'))
-    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[1], linewidth=0, label='OPEX'))
-    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[2], linewidth=0, label='Total'))
+    sub_legend.append(Patch(facecolor='w', edgecolor='k', label='CAPEX', hatch=hatches[0]))
+    sub_legend.append(Patch(facecolor='w', edgecolor='k', label='OPEX', hatch=hatches[1]))
 
-    axs[n].legend(handles=legend_entries)
+    axs[n].legend(handles=sub_legend)
     axs[n].grid(True)
+    axs[n].set_axisbelow(True)
 
     # 3. Net Revenue
     #    combine 1 + 2
@@ -315,15 +320,15 @@ def plot_summary(storage_systems, save_fig=False, path=None):
             fin_result = fin_results[markup_index]
             x.append(system.battery.capacity_nominal)
             y.append((fin_result['total']['revenue'] - fin_result['total']['costs'] - sys_costs['total']) * 1e-3)  # k€
-        axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[bat_type_index], label=battery_type)
+        axs[n].plot(x, y, c=colours[bat_type_index], label=battery_type)
 
-    axs[n].legend()
     axs[n].grid(True)
+    axs[n].set_axisbelow(True)
 
     # 4. Expected lifetimes
     #    estimated lifespan
     n += 1
-    axs[n].set_title('Estimated Battery Lifetime')
+    axs[n].set_title('Estimated Battery Lifespan')
     axs[n].set_xlabel('Battery Capacity [MWh]')
     axs[n].set_ylabel('Lifespan [a]')
 
@@ -335,10 +340,12 @@ def plot_summary(storage_systems, save_fig=False, path=None):
             est_life = system.battery.estimate_lifespan(year_fraction)
             x.append(system.battery.capacity_nominal)
             y.append(est_life)
-        axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[bat_type_index], label=battery_type)
+        axs[n].plot(x, y, c=colours[bat_type_index], label=battery_type)
 
-    axs[n].legend()
     axs[n].grid(True)
+    axs[n].set_axisbelow(True)
+
+    fig.legend(handles=legend_entries)
 
     if save_fig:
         filename = 'summary'

@@ -99,6 +99,18 @@ class StorageSystem:
 
         return self.battery == other.battery
 
+    def __lt__(self, other):
+        if not isinstance(other, StorageSystem):
+            raise NotImplementedError
+
+        return self.battery.capacity_nominal < other.battery.capacity_nominal
+
+    def __gt__(self, other):
+        if not isinstance(other, StorageSystem):
+            raise NotImplementedError
+
+        return self.battery.capacity_nominal > other.battery.capacity_nominal
+
     def __str__(self):
         dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
         dh = np.round(dt / np.timedelta64(1, 'h'))
