@@ -7,32 +7,49 @@ import numpy as np
 import pandas as pd
 import tqdm
 
-from Battery import Battery
+import Battery
 from FrequencyData import FrequencyData
 from MarketData import MarketData
 import StorageSystem
 import Plotter
 
-DEV = False     # limit data for faster processing
+DEV = True     # limit data for faster processing
 DT = 5          # seconds
+
+# level to inc/red transaction triggers when adjusting them in order to meet PQ requirements
+TRAN_TRIGGER_ADJUST = 0.02
 
 
 # optimize configurations
 def optimize_configurations():
-    systems = create_configurations()
-    # valid_systems = validate_configurations(systems)
+    batteries = [
+        Battery.LFPBattery
+    ]
 
-    # battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
-    # ss = StorageSystem.StorageSystem(battery=battery, p_market=5, p_max=6.25, soc_target=0.5)
+    systems = []
+    capacities = []
+    for battery_type in batteries:
+        systems, capacities = create_configurations(battery_type=battery_type)
 
-    results, financials = run_economic_simulation(systems)
+    # get non-duplicated list
+    capacities = set(capacities)
 
-    Plotter.plot_revenues(results, financials, save_fig=True, path='figures/')
+    duration = None
+    if DEV:
+        duration = timedelta(days=2)
 
-    print(financials)
+    valid_systems = validate_configurations(systems, duration=duration)
+
+    results = run_economic_simulation(systems, duration=duration)
+    Plotter.plot_summary(results, save_fig=True, path='figures/')
 
 
-def create_configurations():
+def create_configurations(soc_target=0.5, battery_type=None, battery_args=None):
+    if battery_type is None:
+        battery_type = Battery.Battery
+    if battery_args is None:
+        battery_args = {}
+
     p_market = 5
     p_max = 1.25 * p_market
 
@@ -40,42 +57,30 @@ def create_configurations():
     weighted_duration = StorageSystem.ALERT_DURATION
     weighted_duration += StorageSystem.TRANSACTION_DELAY * StorageSystem.P_MAX_CONST_DEV
     e_min = 2 * p_market * weighted_duration
-    e_min = math.ceil(e_min * 4) / 4.0
+    e_min = math.ceil(e_min * 4) / 4.0  # 0.25 MWh increments
 
     capacities = np.arange(e_min, 1.5*e_min, 0.25)
-    soc_targets = [0.5]     # doesn't make a huge difference
-    triggers = np.arange(0.1, 0.3, 0.05)
     systems = []
     for capacity in capacities:
-        for soc_target in soc_targets:
-            for trigger in triggers:
-                battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=capacity)
-                ss = StorageSystem.StorageSystem(
-                    battery=battery,
-                    p_market=p_market,
-                    p_max=p_max,
-                    soc_target=soc_target,
-                    sell_trigger=0.5 + trigger,
-                    buy_trigger=0.5 - trigger
-                )
+        kwargs = battery_args.copy()
+        kwargs['capacity_nominal'] = capacity
+        battery = battery_type(**kwargs)
+        ss = StorageSystem.StorageSystem(
+            battery=battery,
+            p_market=p_market,
+            p_max=p_max,
+            soc_target=soc_target,
+        )
+        systems.append(ss)
 
-                # avoid simulating duplicate systems, due to force parameter modifications
-                # in order to meet basic requirements
-                if ss not in systems:
-                    systems.append(ss)
-
-    return systems
+    return systems, capacities
 
 
 #  Run configurations against the prequalification (PQ) data
 #  and verify that the min or max state of charge was never reached,
 #  since the system never enters the alert state with this dataset
-def validate_configurations(systems):
-    print("Validating {} configurations.".format(len(systems)))
-
-    duration = None
-    if DEV:
-        duration = timedelta(days=2)
+def validate_configurations(systems, depth=1, duration=None):
+    print("Validating {} capacities (depth={}).".format(len(systems), depth))
 
     results = run_parallel_simulations(
         data_src=FrequencyData.PQ_DATA,
@@ -86,21 +91,26 @@ def validate_configurations(systems):
     )
 
     valid_systems = []
+    systems_to_redo = []
     for index, result in enumerate(results):
         if np.min(result.sim_data['batt_soc']) > result.soc_min \
          and np.max(result.sim_data['batt_soc']) < result.soc_max:
             valid_systems.append(result.reset())
+        elif result.soc_sell_trigger > 0.5 + TRAN_TRIGGER_ADJUST:
+            result.reset()
+            result.soc_sell_trigger -= TRAN_TRIGGER_ADJUST
+            result.soc_buy_trigger += TRAN_TRIGGER_ADJUST
+            systems_to_redo.append(result)
 
-    print("{} systems are valid.".format(len(valid_systems)))
-    return valid_systems
+    print("{} systems are valid (depth={}).".format(len(valid_systems), depth))
+    if len(systems_to_redo) > 0:
+        return valid_systems + validate_configurations(systems_to_redo, depth=depth+1)
+    else:
+        return valid_systems
 
 
-def run_economic_simulation(systems):
+def run_economic_simulation(systems, duration=None):
     print("Evaluating economics for {} configurations.".format(len(systems)))
-
-    duration = None
-    if DEV:
-        duration = timedelta(days=2)
 
     # market data is too small to use shared memory
     md = MarketData()
@@ -115,9 +125,7 @@ def run_economic_simulation(systems):
         plot_path='figures/economic/'
     )
 
-    financials = list(map(lambda ss: ss.compute_financials(), results))
-
-    return results, financials
+    return results
 
 
 def run_parallel_simulations(data_src, duration, dt, storage_systems, plot_path=None):

@@ -19,10 +19,25 @@ ALERT_DURATION = 0.5        # duration that full power must be delivered in the 
 TRANSACTION_DURATION = 0.25     # duration of transaction [h]
 TRANSACTION_DELAY = 0.5         # delay between placing request and delivery [h]
 P_MAX_CONST_DEV = 0.25          # the estimated maximum power required for a sustained deviation [pu] (50 mHz)
-ENERGY_BUY_MARKUP = 0.2         # assumed markup to buy on intraday market vs. day-ahead [%/100]
-ENERGY_SELL_MARKDOWN = 0.2      # assumed markdown to sell on intraday market vs. day-ahead [%/100]
 FCR_PRODUCT_LENGTH = 4          # length of FCR Product [hours]
 DA_PRODUCT_LENGTH = 1           # length of day-ahead product [hours], used to estimate intra-day prices
+
+# Taxes and Fees (per MWh, % price)
+# assumed taxes and fees on energy losses, FCR revenues
+# current legislation is not entirely clear
+# https://www.bmwi.de/Redaktion/EN/Artikel/Energy/electircity-price-components-state-imposed.html
+# https://www.bundesnetzagentur.de/SharedDocs/Downloads/DE/Sachgebiete/Energie/Unternehmen_Institutionen/ErneuerbareEnergien/Speicherpapier.pdf?__blob=publicationFile&v=2
+# EEG surcharge (6.405 ct/kWh, 2019) -> exempt (2nd, pg. 19)
+# CHP surcharge (0.226 ct/kWh, 2019) -> exempt (2nd, pg. 19)
+# Grid fee §19  (0.305 ct/kWh, 2019)
+# Offshore chr. (0.416 ct/kWh, 2019)
+# Interup. load (0.005 ct/kWh, 2019)
+# Concession fee -> assume exempt (residential only?)
+# electric. tax (2.05 ct/kWh)
+# VAT           (19%)
+ENERGY_FEES = (0.305 + 0.416 + 0.005 + 2.05) * 1e-2 * 1e3   # € / MWh
+ENERGY_TAX = 0.19
+FCR_TAX = 0.19
 
 
 class StorageSystem:
@@ -87,8 +102,10 @@ class StorageSystem:
     def __str__(self):
         dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
         dh = np.round(dt / np.timedelta64(1, 'h'))
-        return "{} MW, {} MWh, {} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
-            self.p_market, self.battery.capacity_nominal, dh, self.battery.eta_char, self.battery.eta_disc)
+        return "{}: {} MW, {} MWh, {} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
+            self.battery.name, self.p_market, self.battery.capacity_nominal,
+            dh, self.battery.eta_char, self.battery.eta_disc
+        )
 
     def link_market_data(self, market_data):
         self.market_data = market_data
@@ -242,9 +259,9 @@ class StorageSystem:
     def create_transaction(self, t, delta_soc):
         # TODO transaction size limits
 
-        est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * TRANSACTION_DELAY
-        est_delta_soc = est_delta_e / self.battery.capacity_nominal
-        # est_delta_soc = 0
+        # est_delta_e = -self.compute_fcr_power(np.average(self.df_recent)) * TRANSACTION_DELAY
+        # est_delta_soc = est_delta_e / self.battery.capacity_nominal
+        est_delta_soc = 0
 
         future_soc = self.battery.soc + delta_soc
         est_future_soc = future_soc + est_delta_soc
@@ -262,17 +279,33 @@ class StorageSystem:
                 power=-(self.p_max - self.p_market)
             ))
 
-    def compute_financials(self):
-        financials = {
-            'revenue': {},
-            'costs': {}
-        }
-        financials['revenue']['transactions'], financials['costs']['transactions'] = self.get_trans_revenue()
+    def compute_annual_var_financials(self, markup, markdown):
+        sold_eur, bought_eur = self.get_trans_revenue(markup, markdown)
+        sold_mwh, bought_mwh = self.get_total_trans_volume()
+        losses = max(0.0, (bought_mwh - sold_mwh))  # max for short duration data
+        avg_purchase_price = (bought_eur / bought_mwh) if bought_mwh > 0 else 0
 
         fcr_unit_revenue = 0
         for start_time, active_frac in self.fcr_active.items():
             fcr_unit_revenue += active_frac * self.market_data.fcr_df.at[start_time, 'price']
-        financials['revenue']['fcr'] = round(self.p_market * fcr_unit_revenue, 2)
+
+        year_fraction = self.get_year_fraction()
+
+        financials = {
+            'revenue': {
+                'intraday': self.annualize_and_round(sold_eur, year_fraction),
+                'fcr': self.annualize_and_round(self.p_market * fcr_unit_revenue, year_fraction)
+            },
+            'costs': {
+                'intraday': self.annualize_and_round(bought_eur, year_fraction),
+                'fees': self.annualize_and_round(ENERGY_FEES * losses, year_fraction),
+                'taxes': self.annualize_and_round(ENERGY_TAX * avg_purchase_price * losses, year_fraction)
+            },
+            'total': {}
+        }
+
+        financials['total']['revenue'] = np.sum(list(financials['revenue'].values()))
+        financials['total']['costs'] = np.sum(list(financials['costs'].values()))
 
         return financials
 
@@ -286,7 +319,7 @@ class StorageSystem:
                 bought += transaction.power
         return sold * TRANSACTION_DURATION, -bought * TRANSACTION_DURATION
 
-    def get_trans_revenue(self):
+    def get_trans_revenue(self, markup, markdown):
         sold = 0
         bought = 0
         for transaction in self.transaction_archive:
@@ -299,10 +332,25 @@ class StorageSystem:
             price = self.market_data.da_df.at[da_product_start, 'price']
 
             if transaction.power > 0:
-                sold += round(price * transaction.power * TRANSACTION_DURATION * (1 - ENERGY_SELL_MARKDOWN), 2)
+                sold += price * transaction.power * TRANSACTION_DURATION * (1 - markdown)
             else:
-                bought -= round(price * transaction.power * TRANSACTION_DURATION * (1 + ENERGY_BUY_MARKUP), 2)
+                bought -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
         return sold, bought
+
+    def annualize_and_round(self, value, year_fraction):
+        return round(value / year_fraction, 2)
+
+    def get_year_fraction(self):
+        dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
+        return dt / np.timedelta64(1, 'h') / 8760
+
+    def get_system_cost_annuity(self):
+        # TODO
+        return {
+            'capex': self.battery.capacity_nominal * 1e4,
+            'opex': self.battery.capacity_nominal * 1e3,
+            'total': self.battery.capacity_nominal * 1.1e4
+        }
 
 
 # https://stackoverflow.com/questions/13071384/ceil-a-datetime-to-next-quarter-of-an-hour

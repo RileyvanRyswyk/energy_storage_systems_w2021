@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class Battery:
 
     # The battery is modeled at a high level with considerations for:
@@ -13,6 +14,7 @@ class Battery:
     # eta_disc [%/100]
     # eta_self_disc [%/100 per day]
     def __init__(self, soc=0.5, eta_char=1, eta_disc=1, eta_self_disc=0, capacity_nominal=1):
+        self.name = "Generic"
         self.starting_soc = soc                                 # starting state of charge [%/100]
         self.soc = soc                                          # state of charge [%/100]
         self.eta_char = eta_char                                # charging efficiency [%/100]
@@ -52,6 +54,7 @@ class Battery:
         self.current_cycle['soc'] = []
         self.current_cycle['c_rate'] = []
         self.accumulated_losses = 0
+        self.eq_full_cycle_count = 0
 
     #   energy [MWh]
     #   power [MWh]
@@ -68,7 +71,7 @@ class Battery:
         # Discharging
         elif energy > 0:
             net_energy = energy / self.eta_disc
-            net_power = power / self.eta_char
+            net_power = power / self.eta_disc
 
         pu_energy = net_energy / self.capacity_nominal
 
@@ -131,3 +134,19 @@ class Battery:
         self.current_cycle['soc'].clear()
         self.current_cycle['c_rate'].clear()
 
+    def estimate_lifespan(self, time_span_years):
+        pass    # implement in child class
+
+
+class LFPBattery(Battery):
+
+    def __init__(self, **kwargs):
+        kwargs['eta_char'] = 0.90
+        kwargs['eta_disc'] = 0.90
+        kwargs['eta_self_disc'] = 0
+        super().__init__(**kwargs)
+        self.name = "LFP"   # must be unique
+
+    def estimate_lifespan(self, year_fraction):
+        # TODO
+        return 3000 / self.eq_full_cycle_count * year_fraction

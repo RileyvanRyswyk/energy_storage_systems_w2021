@@ -1,9 +1,12 @@
+import math
+
 import numpy as np
 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker
-from matplotlib import colors, cm
+from matplotlib import colors, lines
+from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter, LinearLocator
 import seaborn as sns
 
@@ -210,7 +213,7 @@ def plot_rel_freq_data(ss, save_fig=False, path=None):
         plt.show()
 
 
-def plot_revenues(storage_systems, financials, save_fig=False, path=None):
+def plot_summary(storage_systems, save_fig=False, path=None):
 
     start_date = np.datetime64(storage_systems[0].sim_data['t'][0], 'D')
     end_date = np.datetime64(storage_systems[0].sim_data['t'][-1], 'D')
@@ -221,37 +224,124 @@ def plot_revenues(storage_systems, financials, save_fig=False, path=None):
     axs = [
         plt.subplot(221),
         plt.subplot(222),
-        plt.subplot(212)
+        plt.subplot(223),
+        plt.subplot(224),
     ]
+
+    # Build dataset
+    battery_types = {}
+    markups_markdowns = np.arange(0, 0.5, 0.2)
+    for ss in storage_systems:
+        battery_type = ss.battery.name
+        if battery_type not in battery_types:
+            battery_types[battery_type] = []
+        var_financials = []
+        for markup_down in markups_markdowns:
+            var_financials.append(ss.compute_annual_var_financials(markup=markup_down, markdown=markup_down))
+        sys_costs = ss.get_system_cost_annuity()
+        battery_types[battery_type].append((ss, sys_costs, var_financials))
+
+    # Generic
+    markers = ['v', 'o', 'h', '*', 'H', '+', 'x', 'D']
+    colours = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
     # 1. Market Revenue (FCR + Intra-day)
     n = 0
-    x = []
-    y = []
-    for index, ss in enumerate(storage_systems):
-        x.append(ss.battery.capacity_nominal)
-        tot_revenue = np.sum(list(financials[index]['revenue'].values()))
-        tot_costs = np.sum(list(financials[index]['costs'].values()))
-        y.append((tot_revenue - tot_costs) * 1e-3)
-
-    axs[n].scatter(x, y)
-    axs[n].set_title('Market Revenue (FCR + Intra-day)')
+    axs[n].set_title('Annualized Market Revenue (FCR + Intraday)\n (with varying intraday markups vs. day-ahead)')
     axs[n].set_xlabel('Battery Capacity [MWh]')
-    axs[n].set_ylabel('[k€]')
+    axs[n].set_ylabel('Market Rev. [k€]')
 
-    sec_ax_y = axs[n].secondary_yaxis(
-        'right', functions=(lambda r: r / p_market, lambda r: r * p_market))
-    sec_ax_y.set_ylabel('[k€/MWh]')
+    legend_entries = []
+    for bat_type_index, battery_type in enumerate(battery_types.keys()):
+        for system, _, fin_results in battery_types[battery_type]:
+            for markup_index, fin_result in enumerate(fin_results):
+                x = system.battery.capacity_nominal
+                y = (fin_result['total']['revenue'] - fin_result['total']['costs']) * 1e-3  # in k€
+                axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[markup_index])
+        legend_entries.append(
+            Patch(facecolor=colours[bat_type_index], edgecolor=colours[bat_type_index], label=battery_type)
+        )
 
-    # ax.legend()
-    axs[0].grid(True)
+    for index, markup_down in enumerate(markups_markdowns):
+        legend_entries.append(lines.Line2D(
+            [0], [0], color='k', marker=markers[index], linewidth=0, label="{:.0%} markup".format(markup_down)
+        ))
+
+    axs[n].legend(handles=legend_entries)
+    axs[n].grid(True)
 
     # 2. System Costs
+    #    Bar chart: Initial investment, additional investment, op & maintenance
+    n += 1
+    axs[n].set_title('System Costs (20 year annuity)')
+    axs[n].set_xlabel('Battery Capacity [MWh]')
+    axs[n].set_ylabel('Annuity [k€]')
+
+    legend_entries = []
+    for bat_type_index, battery_type in enumerate(battery_types.keys()):
+        x = []
+        y_capex = []
+        y_opex = []
+        y_total = []
+        for system, sys_costs, _ in battery_types[battery_type]:
+            x.append(system.battery.capacity_nominal)
+            y_capex.append((sys_costs['capex']) * 1e-3)     # in k€
+            y_opex.append((sys_costs['opex']) * 1e-3)       # in k€
+            y_total.append((sys_costs['total']) * 1e-3)     # in k€
+        axs[n].plot(x, y_capex, c=colours[bat_type_index], marker=markers[0])
+        axs[n].plot(x, y_opex, c=colours[bat_type_index], marker=markers[1])
+        axs[n].plot(x, y_total, c=colours[bat_type_index], marker=markers[2])
+        legend_entries.append(lines.Line2D([0], [0], color=colours[bat_type_index], label=battery_type))
+
+    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[0], linewidth=0, label='CAPEX'))
+    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[1], linewidth=0, label='OPEX'))
+    legend_entries.append(lines.Line2D([0], [0], color='k', marker=markers[2], linewidth=0, label='Total'))
+
+    axs[n].legend(handles=legend_entries)
+    axs[n].grid(True)
+
     # 3. Net Revenue
+    #    combine 1 + 2
+    n += 1
+    markup_index = math.floor(len(markups_markdowns) / 2)
+    axs[n].set_title('Net Revenues (markup={:.0%})'.format(markups_markdowns[markup_index]))
+    axs[n].set_xlabel('Battery Capacity [MWh]')
+    axs[n].set_ylabel('Net Rev. [k€]')
+
+    for bat_type_index, battery_type in enumerate(battery_types.keys()):
+        x = []
+        y = []
+        for system, sys_costs, fin_results in battery_types[battery_type]:
+            fin_result = fin_results[markup_index]
+            x.append(system.battery.capacity_nominal)
+            y.append((fin_result['total']['revenue'] - fin_result['total']['costs'] - sys_costs['total']) * 1e-3)  # k€
+        axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[bat_type_index], label=battery_type)
+
+    axs[n].legend()
+    axs[n].grid(True)
+
     # 4. Expected lifetimes
+    #    estimated lifespan
+    n += 1
+    axs[n].set_title('Estimated Battery Lifetime')
+    axs[n].set_xlabel('Battery Capacity [MWh]')
+    axs[n].set_ylabel('Lifespan [a]')
+
+    for bat_type_index, battery_type in enumerate(battery_types.keys()):
+        x = []
+        y = []
+        for system, _, _ in battery_types[battery_type]:
+            year_fraction = system.get_year_fraction()
+            est_life = system.battery.estimate_lifespan(year_fraction)
+            x.append(system.battery.capacity_nominal)
+            y.append(est_life)
+        axs[n].scatter(x, y, c=colours[bat_type_index], marker=markers[bat_type_index], label=battery_type)
+
+    axs[n].legend()
+    axs[n].grid(True)
 
     if save_fig:
-        filename = 'revenues'
+        filename = 'summary'
         plt.savefig(path + filename + '.svg', dpi=150, format='svg')
         plt.savefig(path + filename + '.png', dpi=150, format='png')
     else:
@@ -259,7 +349,8 @@ def plot_revenues(storage_systems, financials, save_fig=False, path=None):
 
 
 def get_ss_file_name(ss):
-    return '_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+    return '_{}_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+            ss.battery.name,
             ss.battery.capacity_nominal,
             ss.soc_sell_trigger - 0.5,
             ss.battery.eta_char,
