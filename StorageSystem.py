@@ -39,6 +39,27 @@ ENERGY_FEES = (0.305 + 0.416 + 0.005 + 2.05) * 1e-2 * 1e3   # € / MWh
 ENERGY_TAX = 0.19
 FCR_TAX = 0.19
 
+#General:
+investment_horizon = 20
+power = 6.25 #MW
+capital_costs = 0.05 # % per year
+
+#UPFRONT INVESTMENT:
+costs_installed_capacity = 226151 # Euro/MWh (2,75 Euro * 1 MWh / (3,2V * 3,8 Ah))
+costs_power_interface= 70000 # Euro/MW
+land_acquisition_costs = 0 # Euro
+installation_labour_equipment_costs = 70000 #Euro/MWh
+
+#Recurring Costs:
+maintenance_and_repair = 0.01  #TODO: Find assumtion (%/MWh)
+monitoring_labour_costs = 15000  # Euro/year
+supply_energy_costs = 0 # kWh/year
+
+#Aging etc.
+recycle_value = 0.1 # %
+cycles_per_day = 1 #TODO: Find fitting values for each Capacity
+cycles_at_defined_dod = 5000 #TODO: Find fitting values for each Capacity
+calendar_lifetime = 10
 
 class StorageSystem:
 
@@ -85,6 +106,7 @@ class StorageSystem:
         # Market data (FCR & Day-ahead)
         self.market_data = None
         self.fcr_active = None
+
 
     def __eq__(self, other):
         if not isinstance(other, StorageSystem):
@@ -357,11 +379,63 @@ class StorageSystem:
         return dt / np.timedelta64(1, 'h') / 8760
 
     def get_system_cost_annuity(self):
-        # TODO
+        capacity = self.battery.capacity_nominal
+
+        cycles_at_defined_dod = 3000 + (capacity/0.25 - 25)*500 #dummy
+        expected_lifetime = int(cycles_at_defined_dod / (cycles_per_day * 365)) # TODO: Better calculation
+        storage_lifetime = min(calendar_lifetime, expected_lifetime)
+
+        #CAPEX:
+        #Points of investments:
+
+        initial_costs = costs_installed_capacity * capacity + \
+                        power * costs_power_interface + \
+                        land_acquisition_costs + \
+                        installation_labour_equipment_costs
+
+        investment_costs = [initial_costs]
+
+        points_of_reinvestment = []
+        for t in range(1, investment_horizon):
+            if(np.mod(t, storage_lifetime) == 0):
+                points_of_reinvestment.append(t)
+
+        #NPV of initial and replacement investments:
+        npv_investment = 0
+        for i in points_of_reinvestment:
+            npv_investment += (costs_installed_capacity * capacity + power * costs_power_interface) * \
+                                      np.power(1 - capital_costs, i)
+
+            investment_costs.append((costs_installed_capacity * capacity + costs_power_interface * power))
+
+        if (1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime > recycle_value):
+            linear_depreciation_factor = 1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime
+        else:
+            linear_depreciation_factor = recycle_value
+
+        npv_salvage_value = (linear_depreciation_factor * (costs_power_interface * power + costs_installed_capacity * capacity) \
+                    + land_acquisition_costs) * np.power(1 - capital_costs, investment_horizon)
+
+        npv_capex = npv_investment - npv_salvage_value
+
+        #OPEX:
+        yearly_expenses_maintenance = []
+        yearly_expenses_labour = []
+        yearly_expenses_supply_costs = []
+        for t in range(investment_horizon):
+            #Sauer Lecture OPEX Calculation - Maintenance
+            yearly_expenses_maintenance.append(np.power((1-capital_costs),t) * \
+            maintenance_and_repair * capacity * costs_installed_capacity)
+            #Labour and energy supply costs
+            yearly_expenses_labour.append(np.power((1-capital_costs),t) * monitoring_labour_costs)
+            yearly_expenses_supply_costs.append(np.power((1-capital_costs),t) * supply_energy_costs)
+
+        npv_opex = np.sum(yearly_expenses_maintenance + yearly_expenses_labour + yearly_expenses_supply_costs)
+
         return {
-            'capex': self.battery.capacity_nominal * 1e4,
-            'opex': self.battery.capacity_nominal * 1e3,
-            'total': self.battery.capacity_nominal * 1.1e4
+            'capex':    npv_capex ,
+            'opex':     npv_opex,
+            'total':    npv_capex + npv_opex
         }
 
 
