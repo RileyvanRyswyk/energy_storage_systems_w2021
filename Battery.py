@@ -80,8 +80,11 @@ class Battery:
         pu_energy += dt * self.eta_self_disc_s
 
         self.soc -= pu_energy
-        self.track_cycles(-pu_energy, power / self.capacity_nominal)
+        self.track_cycles(-pu_energy, net_power / self.capacity_nominal)
         self.accumulated_losses -= energy - pu_energy * self.capacity_nominal   # positive value
+
+        if np.isnan(self.accumulated_losses):
+            raise Exception('loss computation error')
 
         return net_energy, net_power
 

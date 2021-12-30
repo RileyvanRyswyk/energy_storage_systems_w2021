@@ -1,3 +1,4 @@
+import glob
 from datetime import timedelta
 import warnings
 import numpy as np
@@ -18,19 +19,21 @@ class FrequencyData:
     # https://data.dtu.dk/articles/dataset/Grid_Frequency_Measurements_of_the_Continental_European_Power_System_during_2019/12758429
     DTU_DATA = "data/freq_DK1_2019.csv"
 
+    DATA_PATH = 'data'
+
     # # Nominal frequency [Hz]
     F_NOMINAL = 50
 
-    def __init__(self, data_src):
+    def __init__(self, data_src=None):
         self.df = None          # data frame
         self.time_step = 0      # data time step in seconds
 
-        if data_src == self.PQ_DATA:
-            self.load_pq_data(self.PQ_DATA)
-        elif data_src == self.DTU_DATA:
+        if data_src == self.DTU_DATA:
             self.load_dtu_data()
+        elif data_src is not None:
+            self.load_freq_data_files(data_src)
         else:
-            self.load_pq_data(data_src)
+            raise Exception('Data source not provided')
 
         # self.compute_delta_f()
 
@@ -38,18 +41,29 @@ class FrequencyData:
         self.df.info(verbose=False, memory_usage="deep")
         print(f'Frequencies range between {self.df["freq"].min():.3f} and {self.df["freq"].max():.3f}')
 
-    def load_pq_data(self, file_path):
+    def load_freq_data_files(self, data_file_mask):
         self.time_step = 1  # data at 1 second intervals
-        self.df = pd.read_csv(
-            file_path,
-            names=["date", "time", "freq"],
-            usecols=[0, 1, 3],
-            parse_dates={"datetime": ["date", "time"]},
-            infer_datetime_format=True,
-            dtype={"freq": np.float32},
-            index_col="datetime",
-            # nrows= 15 * 60 * 1000
-        )
+        frames = []
+        files = glob.glob("{}".format(data_file_mask))
+
+        for file in files:
+            frames.append(pd.read_csv(
+                file,
+                names=["date", "time", "freq"],
+                usecols=[0, 1, 3],
+                parse_dates={"datetime": ["date", "time"]},
+                infer_datetime_format=True,
+                dtype={"freq": np.float32},
+                index_col="datetime",
+                # nrows= 15 * 60 * 1000
+            ))
+        self.df = pd.concat(frames)
+
+        # correct offset to ensure even balance throughout the year
+        # assume constant measurement offset
+        offset = self.df['freq'].mean() - self.F_NOMINAL
+        # self.df['freq'] -= offset
+        print("Frequency offset: {}".format(offset))
 
     def load_dtu_data(self):
         self.time_step = 0.5    # data at 0.5 second intervals
@@ -139,6 +153,7 @@ class FrequencyData:
 
 
 if __name__ == "__main__":
-    fd = FrequencyData(FrequencyData.DTU_DATA)
+    fd = FrequencyData(FrequencyData.DATA_PATH + '/202*_Frequenz.csv')
+    # fd = FrequencyData(FrequencyData.DTU_DATA)
     # fd.plot_distribution()
     # fd.plot_energy(duration=timedelta(days=30), offset=timedelta(days=4))

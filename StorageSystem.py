@@ -107,7 +107,6 @@ class StorageSystem:
         self.market_data = None
         self.fcr_active = None
 
-
     def __eq__(self, other):
         if not isinstance(other, StorageSystem):
             raise NotImplementedError
@@ -182,7 +181,7 @@ class StorageSystem:
         # SOC management via transactions
         delta_soc_sch_trans, p_soc_trans = self.manage_soc_trans(t)
 
-        if self.is_fcr_active(t, dt):
+        if self.is_fcr_active(t, dt, df):
             # FCR power (product);
             # Power for SOC management via allowed manipulations (dead band, over-fulfillment, activation delay)
             p_fcr, p_soc_fcr = self.compute_net_fcr_power(df, p_soc_trans, delta_soc_sch_trans, dt)
@@ -235,7 +234,10 @@ class StorageSystem:
 
         return delta_soc, power
 
-    def is_fcr_active(self, t, dt):
+    def is_fcr_active(self, t, dt, df):
+        if math.isnan(df):
+            return False
+
         if self.market_data is not None:
             product_start = floor_dt_h(t, FCR_PRODUCT_LENGTH)
             if product_start not in self.fcr_active:
@@ -316,12 +318,21 @@ class StorageSystem:
     def compute_annual_var_financials(self, markup, markdown):
         sold_eur, bought_eur = self.get_trans_revenue(markup, markdown)
         sold_mwh, bought_mwh = self.get_total_trans_volume()
-        losses = max(0.0, (bought_mwh - sold_mwh))  # max for short duration data
+        losses = self.battery.accumulated_losses
         avg_purchase_price = (bought_eur / bought_mwh) if bought_mwh > 0 else 0
 
         fcr_unit_revenue = 0
         for start_time, active_frac in self.fcr_active.items():
-            fcr_unit_revenue += active_frac * self.market_data.fcr_df.at[start_time, 'price']
+            price = self.market_data.fcr_df.at[start_time, 'price']
+
+            # sometimes there are two tenders, only one produces a valid value
+            if type(price) is pd.Series:
+                for time_stamp, price_entry in list(price.items()):
+                    if type(price_entry) is float:
+                        price = price_entry
+                        break
+
+            fcr_unit_revenue += active_frac * price
 
         year_fraction = self.get_year_fraction()
 

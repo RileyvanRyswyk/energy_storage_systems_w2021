@@ -121,7 +121,7 @@ def run_economic_simulation(systems, duration=None):
         system.link_market_data(md)
 
     results = run_parallel_simulations(
-        data_src='data/202111_Frequenz.csv',
+        data_src=FrequencyData.DATA_PATH + '/202*_Frequenz.csv',
         duration=duration,
         dt=DT,
         storage_systems=systems,
@@ -136,9 +136,9 @@ def run_parallel_simulations(data_src, duration, dt, storage_systems, plot_path=
 
     systems = map(lambda ss: (freq, dt, ss, plot_path), storage_systems)
 
+    results = []
     try:
         with Pool(processes=min(8, cpu_count())) as pool:
-            results = []
             for result in tqdm.tqdm(
                 pool.imap_unordered(simulate_storage_config_star, systems),
                 total=len(storage_systems)
