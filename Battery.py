@@ -3,6 +3,9 @@ import numpy as np
 
 class Battery:
 
+    # maximum expected battery lifespan in years
+    CALENDER_LIFESPAN = 10
+
     # The battery is modeled at a high level with considerations for:
     #   (i)     Energy
     #   (ii)    Power
@@ -143,6 +146,8 @@ class Battery:
 
 class LFPBattery(Battery):
 
+    CALENDER_LIFESPAN = 10
+
     def __init__(self, **kwargs):
         kwargs['eta_char'] = 0.90
         kwargs['eta_disc'] = 0.90
@@ -152,4 +157,4 @@ class LFPBattery(Battery):
 
     def estimate_lifespan(self, year_fraction):
         # TODO
-        return 3000 / self.eq_full_cycle_count * year_fraction
+        return min(self.CALENDER_LIFESPAN, 3000 / self.eq_full_cycle_count * year_fraction)
