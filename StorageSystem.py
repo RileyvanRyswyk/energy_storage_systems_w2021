@@ -60,7 +60,8 @@ recycle_value = 0.1  # %
 
 class StorageSystem:
 
-    def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5, sell_trigger=1, buy_trigger=0):
+    def __init__(self, battery=Battery(), p_market=1, p_max=1.25, soc_target=0.5, sell_trigger=1, buy_trigger=0,
+                 log_decimation=1):
         self.battery = battery          # Battery class
         self.p_market = p_market        # marketable power [MW]
         self.p_max = p_max              # maximum power [MW]
@@ -93,11 +94,13 @@ class StorageSystem:
         self.df_recent = deque([0] * 3*60, maxlen=3*60)
 
         # store data during simulation for plotting later
+        self.log_decimation = log_decimation
         self.sim_data = {}
-        self.sim_index = 0
+        self.sim_index = [0, 0]             # undecimated, decimated simulation index
         self.energy = {
             'deadband': [0, 0],             # pos, neg
-            'over_fulfillment': [0, 0]      # pos, neg
+            'over_fulfillment': [0, 0],     # pos, neg
+            'fcr_gross': [0, 0]             # pos, neg
         }
 
         # Market data (FCR & Day-ahead)
@@ -132,9 +135,10 @@ class StorageSystem:
     def __str__(self):
         dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
         dh = np.round(dt / np.timedelta64(1, 'h'))
-        return "{}: {} MW, {} MWh, {} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
+        dh_active = self.get_active_time()
+        return "{}: {} MW, {} MWh, {:.1f}/{} hours, \u03B7c = {:.1%}, \u03B7d = {:.1%}".format(
             self.battery.name, self.p_market, self.battery.capacity_nominal,
-            dh, self.battery.eta_char, self.battery.eta_disc
+            dh_active, dh, self.battery.eta_char, self.battery.eta_disc
         )
 
     def link_market_data(self, market_data):
@@ -143,22 +147,28 @@ class StorageSystem:
         self.fcr_active = dict.fromkeys(market_data.fcr_df.index, 0.0)
 
     def init_sim_data(self, n_data_pts):
-        self.sim_index = 0
+        if n_data_pts is None:
+            n_pts = self.sim_data['t'].size
+        else:
+            n_pts = math.ceil(n_data_pts/self.log_decimation)
+        self.sim_index = [0, 0]
         self.sim_data = {
-            't': np.zeros(n_data_pts, dtype='datetime64[s]'),
-            'freq': np.zeros(n_data_pts, dtype=np.float32),
-            'df': np.zeros(n_data_pts, dtype=np.float32),
-            'p_batt': np.zeros(n_data_pts, dtype=np.float32),
-            'p_fcr': np.zeros(n_data_pts, dtype=np.float32),
-            'p_soc_fcr': np.zeros(n_data_pts, dtype=np.float32),
-            'p_soc_trans': np.zeros(n_data_pts, dtype=np.float32),
-            'batt_soc': np.zeros(n_data_pts, dtype=np.float32),
+            't': np.zeros(n_pts, dtype='datetime64[s]'),
+            'freq': np.zeros(n_pts, dtype=np.float32),
+            'df': np.zeros(n_pts, dtype=np.float32),
+            'p_batt': np.zeros(n_pts, dtype=np.float32),
+            'p_fcr': np.zeros(n_pts, dtype=np.float32),
+            'p_soc_fcr': np.zeros(n_pts, dtype=np.float32),
+            'p_soc_trans': np.zeros(n_pts, dtype=np.float32),
+            'batt_soc': np.zeros(n_pts, dtype=np.float32),
+            'batt_cap': np.zeros(n_pts, dtype=np.float32),
         }
 
     def reset(self):
-        self.init_sim_data(self.sim_data['t'].size)
+        self.init_sim_data(None)
         self.energy['deadband'] = [0, 0]
         self.energy['over_fulfillment'] = [0, 0]
+        self.energy['fcr_gross'] = [0, 0]
         self.df_recent.clear()
         self.scheduled_transactions.clear()
         self.transaction_archive.clear()
@@ -192,16 +202,20 @@ class StorageSystem:
         e = (p_batt * dt / 3600)
         e_batt_act, p_batt_act = self.battery.execute_step(e, p_batt, dt)
 
-        # store results from this step
-        self.sim_data['t'][self.sim_index] = t
-        self.sim_data['freq'][self.sim_index] = freq
-        self.sim_data['df'][self.sim_index] = df
-        self.sim_data['p_batt'][self.sim_index] = p_batt_act
-        self.sim_data['p_fcr'][self.sim_index] = p_fcr
-        self.sim_data['p_soc_fcr'][self.sim_index] = p_soc_fcr
-        self.sim_data['p_soc_trans'][self.sim_index] = p_soc_trans
-        self.sim_data['batt_soc'][self.sim_index] = self.battery.soc
-        self.sim_index += 1
+        # Store data at each decimated simulation index
+
+        if self.sim_index[0] % self.log_decimation == 0:
+            self.sim_data['t'][self.sim_index[1]] = t
+            self.sim_data['freq'][self.sim_index[1]] = freq
+            self.sim_data['df'][self.sim_index[1]] = df
+            self.sim_data['p_batt'][self.sim_index[1]] = p_batt_act
+            self.sim_data['p_fcr'][self.sim_index[1]] = p_fcr
+            self.sim_data['p_soc_fcr'][self.sim_index[1]] = p_soc_fcr
+            self.sim_data['p_soc_trans'][self.sim_index[1]] = p_soc_trans
+            self.sim_data['batt_soc'][self.sim_index[1]] = self.battery.soc
+            self.sim_data['batt_cap'][self.sim_index[1]] = self.battery.capacity_actual
+            self.sim_index[1] += 1
+        self.sim_index[0] += 1
 
     # Compute the change in state of charge due to scheduled transactions
     # positive transactions -> sell power
@@ -220,12 +234,12 @@ class StorageSystem:
                 power += tran.power
 
         # change in battery SOC based on future transactions
-        delta_soc = -energy / self.battery.capacity_nominal
+        delta_soc = -energy / self.battery.capacity_actual
 
         # 2. At 15 min intervals,
         #   a. archive old transactions
         #   b. check if a new transaction is needed!
-        if t == ceil_dt_15min(t):
+        if t == ceil_dt_min(t, 15):
             self.archive_transactions(t)
             self.create_transaction(t, delta_soc)
 
@@ -243,11 +257,19 @@ class StorageSystem:
 
         return True
 
+    def get_active_time(self):
+        if self.market_data is not None:
+            return sum(list(self.fcr_active.values())) * FCR_PRODUCT_LENGTH
+        else:
+            dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
+            return np.round(dt / np.timedelta64(1, 'h'))
+
     # Compute the change in state of charge due to scheduled transactions
     # positive -> deliver power
     # negative -> consume power
     def compute_net_fcr_power(self, df, p_soc_trans, delta_soc_sch_trans, dt):
         p_fcr = self.compute_fcr_power(df)
+        self.energy['fcr_gross'][1 * (p_fcr > 0)] -= p_fcr * dt / 3600
 
         # active energy management via allowed FCR power manipulation
         p_soc = 0
@@ -335,13 +357,13 @@ class StorageSystem:
 
         financials = {
             'revenue': {
-                'intraday': self.annualize_and_round(sold_eur, year_fraction),
-                'fcr': self.annualize_and_round(self.p_market * fcr_unit_revenue, year_fraction)
+                'intraday': annualize_and_round(sold_eur, year_fraction),
+                'fcr': annualize_and_round(self.p_market * fcr_unit_revenue, year_fraction)
             },
             'costs': {
-                'intraday': self.annualize_and_round(bought_eur, year_fraction),
-                'fees': self.annualize_and_round(ENERGY_FEES * losses, year_fraction),
-                'taxes': self.annualize_and_round(ENERGY_TAX * avg_purchase_price * losses, year_fraction)
+                'intraday': annualize_and_round(bought_eur, year_fraction),
+                'fees': annualize_and_round(ENERGY_FEES * losses, year_fraction),
+                'taxes': annualize_and_round(ENERGY_TAX * avg_purchase_price * losses, year_fraction)
             },
             'total': {}
         }
@@ -379,9 +401,6 @@ class StorageSystem:
                 bought -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
         return sold, bought
 
-    def annualize_and_round(self, value, year_fraction):
-        return round(value / year_fraction, 2)
-
     def get_year_fraction(self):
         dt = self.sim_data['t'][-1] - self.sim_data['t'][0]
         return dt / np.timedelta64(1, 'h') / 8760
@@ -393,8 +412,8 @@ class StorageSystem:
         # expected_lifetime = int(cycles_at_defined_dod / (cycles_per_day * 365)) # TODO: Better calculation
         storage_lifetime = int(self.battery.estimate_lifespan(self.get_year_fraction()))
 
-        #CAPEX:
-        #Points of investments:
+        # CAPEX:
+        # Points of investments:
 
         initial_costs = costs_installed_capacity * capacity + \
                         self.p_market * costs_power_interface + \
@@ -408,7 +427,7 @@ class StorageSystem:
             if(np.mod(t, storage_lifetime) == 0):
                 points_of_reinvestment.append(t)
 
-        #NPV of initial and replacement investments:
+        # NPV of initial and replacement investments:
         npv_investment = 0
         for i in points_of_reinvestment:
             npv_investment += (costs_installed_capacity * capacity + self.p_market * costs_power_interface) * \
@@ -426,15 +445,15 @@ class StorageSystem:
 
         npv_capex = npv_investment - npv_salvage_value
 
-        #OPEX:
+        # OPEX:
         yearly_expenses_maintenance = []
         yearly_expenses_labour = []
         yearly_expenses_supply_costs = []
         for t in range(investment_horizon):
-            #Sauer Lecture OPEX Calculation - Maintenance
+            # Sauer Lecture OPEX Calculation - Maintenance
             yearly_expenses_maintenance.append(np.power((1-capital_costs),t) * \
             maintenance_and_repair * capacity * costs_installed_capacity)
-            #Labour and energy supply costs
+            # Labour and energy supply costs
             yearly_expenses_labour.append(np.power((1-capital_costs),t) * monitoring_labour_costs)
             yearly_expenses_supply_costs.append(np.power((1-capital_costs),t) * supply_energy_costs)
 
@@ -451,13 +470,20 @@ class StorageSystem:
         }
 
 
+# round datetime to next x sec
+def ceil_dt_sec(dt, n_sec):
+    # number of seconds to next quarter hour mark
+    delta = math.ceil(dt.second / n_sec) * n_sec - dt.second
+    # time + number of seconds to quarter hour mark.
+    return dt + timedelta(seconds=delta)
+
 # https://stackoverflow.com/questions/13071384/ceil-a-datetime-to-next-quarter-of-an-hour
-# round datetime to next 15 mins
-def ceil_dt_15min(dt):
+# round datetime to next x mins
+def ceil_dt_min(dt, n_min):
     # how many secs have passed this hour
     nsecs = dt.minute * 60 + dt.second
     # number of seconds to next quarter hour mark
-    delta = math.ceil(nsecs / 900) * 900 - nsecs
+    delta = math.ceil(nsecs / n_min / 60) * n_min * 60 - nsecs
     # time + number of seconds to quarter hour mark.
     return dt + timedelta(seconds=delta)
 
@@ -477,3 +503,7 @@ def floor_dt_h(dt, num_hours):
     # how many secs have passed since last cutoff
     delta = (dt.hour % num_hours) * 3600 + dt.minute * 60 + dt.second
     return dt - timedelta(seconds=delta)
+
+
+def annualize_and_round(value, year_fraction):
+    return round(value / year_fraction, 2)

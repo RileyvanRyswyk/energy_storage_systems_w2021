@@ -1,4 +1,9 @@
+import math
+
 import numpy as np
+
+# Update the battery capacity due to aging after n seconds
+UPDATE_CAPACITY_EVERY_N_S = 3600  # every hour
 
 
 class Battery:
@@ -25,6 +30,7 @@ class Battery:
         self.eta_self_disc_s = eta_self_disc / (3600 * 24)      # self discharge [%/100 per s]
         self.eq_full_cycle_count = 0                            # equivalent full cycle count
         self.capacity_nominal = capacity_nominal                # nominal capacity [MW]
+        self.capacity_actual = capacity_nominal                 # actual usable capacity [MW]
 
         # For cycle counting
         self.cycles = {
@@ -36,6 +42,7 @@ class Battery:
             'c_rate': []
         }
         self.accumulated_losses = 0
+        self.elapsed_time = 0
 
     # compare batteries to each other for equivalent parameters (floats only)
     def __eq__(self, other):
@@ -58,6 +65,8 @@ class Battery:
         self.current_cycle['c_rate'] = []
         self.accumulated_losses = 0
         self.eq_full_cycle_count = 0
+        self.capacity_actual = self.capacity_nominal
+        self.elapsed_time = 0
 
     #   energy [MWh]
     #   power [MWh]
@@ -76,18 +85,22 @@ class Battery:
             net_energy = energy / self.eta_disc
             net_power = power / self.eta_disc
 
-        pu_energy = net_energy / self.capacity_nominal
+        pu_energy = net_energy / self.capacity_actual
 
         # self discharge
         # neglect power, as self discharge is internal
         pu_energy += dt * self.eta_self_disc_s
 
         self.soc -= pu_energy
-        self.track_cycles(-pu_energy, net_power / self.capacity_nominal)
-        self.accumulated_losses -= energy - pu_energy * self.capacity_nominal   # positive value
+        self.track_cycles(-pu_energy, net_power / self.capacity_actual)
+        self.accumulated_losses -= energy - pu_energy * self.capacity_actual   # positive value
 
         if np.isnan(self.accumulated_losses):
             raise Exception('loss computation error')
+
+        if self.elapsed_time % UPDATE_CAPACITY_EVERY_N_S < dt:
+            self.update_capacity()
+        self.elapsed_time += dt
 
         return net_energy, net_power
 
@@ -140,6 +153,9 @@ class Battery:
         self.current_cycle['soc'].clear()
         self.current_cycle['c_rate'].clear()
 
+    def update_capacity(self):
+        pass    # implement in child class
+
     def estimate_lifespan(self, time_span_years):
         pass    # implement in child class
 
@@ -158,3 +174,20 @@ class LFPBattery(Battery):
     def estimate_lifespan(self, year_fraction):
         # TODO
         return min(self.CALENDER_LIFESPAN, 3000 / self.eq_full_cycle_count * year_fraction)
+
+    def update_capacity(self):
+        if self.elapsed_time == 0:
+            return  # no degradation
+
+        t = self.elapsed_time / (3600 * 24 * 365)
+        temp = 30      # Celsius
+        soc = 0.5      # todo
+        cap_fade_cal = 0.0025 * (math.e ** (0.1099 * temp)) * (math.e ** (0.0169 * soc)) \
+                       * t ** (-3.866e-13 * temp ** 6.635 - 4.853e-12 * soc ** 5.508 + 0.9595) + 0.7
+
+        cap_fade_cycle = 20 * self.eq_full_cycle_count / 3000
+
+        cap_fade = (cap_fade_cycle + cap_fade_cal) / 100
+
+        self.capacity_actual = self.capacity_nominal * (1 - cap_fade)
+

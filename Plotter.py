@@ -22,71 +22,78 @@ AMBER = '#F5B14C'
 
 def plot_time_curves(ss, save_fig=False, path=None):
 
-    n_plots = 5
-    fig, axs = plt.subplots(n_plots, 1, constrained_layout=True, figsize=(8, 2*n_plots))
+    n_plots = 6
+    fig, axs = plt.subplots(3, 2, constrained_layout=True, figsize=(16, 8))
     fig.suptitle('Load Profile: {}'.format(ss))
 
     # 1. Load Frequency
-    n = 0
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['freq'], linewidth=0.5)
-    axs[n].set_ylabel('Sys Freq [Hz]')
+    nx = 0
+    ny = 0
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['freq'], linewidth=0.5)
+    axs[nx, ny].set_ylabel('Sys Freq [Hz]')
 
     # 2. FCR Power
-    n += 1
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['p_fcr'] + ss.sim_data['p_soc_fcr'],
+    nx += 1
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_fcr'] + ss.sim_data['p_soc_fcr'],
                 alpha=1, label='FCR + SOC', linewidth=0.25)
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['p_fcr'], label='FCR Only', linewidth=0.25)
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_fcr'], label='FCR Only', linewidth=0.25)
 
-    axs[n].set_ylabel('FCR Power [MW]')
+    axs[nx, ny].set_ylabel('FCR Power [MW]')
 
     # Put a legend to the right of the current axis
-    axs[n].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    axs[nx, ny].legend(loc='center left', bbox_to_anchor=(1, 0.5))
 
     # 3. Transaction Power
-    n += 1
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'])
-    axs[n].set_ylabel('Trans. Power [MW]')
-    axs[n].text(1.025, 0.5, "Sold: {:.2f} MWh\nBought: {:.2f} MWh".format(*ss.get_total_trans_volume()),
-                horizontalalignment='left', verticalalignment='center', transform=axs[n].transAxes,
+    nx += 1
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'])
+    axs[nx, ny].set_ylabel('Trans. Power [MW]')
+    axs[nx, ny].text(1.025, 0.5, "Sold: {:.2f} MWh\nBought: {:.2f} MWh".format(*ss.get_total_trans_volume()),
+                horizontalalignment='left', verticalalignment='center', transform=axs[nx, ny].transAxes,
                 fontsize=12, linespacing=1.5,
                 bbox={'facecolor': 'white', 'pad': 5, 'edgecolor': (0.85, 0.85, 0.85), 'boxstyle': "Round, pad=0.5"})
 
     # 4. Battery Power
-    n += 1
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['p_batt'], linewidth=0.25)
-    axs[n].set_ylabel('Battery Power [MW]')
-    axs[n].annotate('Discharging', xy=(1.01, 1), xycoords='axes fraction', ha="left", va="top")
-    axs[n].annotate('Charging', xy=(1.01, 0), xycoords='axes fraction', ha="left", va="bottom")
+    nx = 0
+    ny += 1
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_batt'], linewidth=0.25)
+    axs[nx, ny].set_ylabel('Battery Power [MW]')
+    axs[nx, ny].annotate('Discharging', xy=(1.01, 1), xycoords='axes fraction', ha="left", va="top")
+    axs[nx, ny].annotate('Charging', xy=(1.01, 0), xycoords='axes fraction', ha="left", va="bottom")
 
     # 5. SOC
-    n += 1
-    axs[n].plot(ss.sim_data['t'], ss.sim_data['batt_soc'], label='SOC', linewidth=0.75)
-    axs[n].set_ylabel('SOC [%]')
-    axs[n].set_ylim((0, 1))
-    axs[n].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=1))
-    axs[n].hlines([ss.soc_max, ss.soc_min], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+    nx += 1
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['batt_soc'], label='SOC', linewidth=0.75)
+    axs[nx, ny].set_ylabel('SOC [%]')
+    axs[nx, ny].set_ylim((0, 1))
+    axs[nx, ny].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=1))
+    axs[nx, ny].hlines([ss.soc_max, ss.soc_min], ss.sim_data['t'][0], ss.sim_data['t'][-1],
                   color=PURPLE, linestyles='dashed', alpha=0.8, label='SOC limits')
-    axs[n].hlines([ss.soc_sell_trigger, ss.soc_buy_trigger], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+    axs[nx, ny].hlines([ss.soc_sell_trigger, ss.soc_buy_trigger], ss.sim_data['t'][0], ss.sim_data['t'][-1],
                   color=GREEN, linestyles='dashdot', alpha=0.8, label='Trade triggers')
-    axs[n].hlines([ss.soc_target], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+    axs[nx, ny].hlines([ss.soc_target], ss.sim_data['t'][0], ss.sim_data['t'][-1],
                   color=AMBER, linestyles='dotted', alpha=0.8, label='SOC Target')
 
     # Put a legend to the right of the current axis
-    axs[n].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    axs[nx, ny].legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+    # 6. Battery Capacity
+    nx += 1
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['batt_cap'], label='Battery Capacity')
+    axs[nx, ny].set_ylabel('Battery Capacity [MWh]')
 
     # General adjustments
-    for nn, ax in enumerate(axs):
+    for nx, axes in enumerate(axs):
+        for ny, ax in enumerate(axes):
+            # format x labels
+            major_locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
+            minor_locator = mdates.AutoDateLocator(minticks=3*4, maxticks=8*4)
+            formatter = mdates.ConciseDateFormatter(major_locator)
+            ax.xaxis.set_major_locator(major_locator)
+            ax.xaxis.set_minor_locator(minor_locator)
+            ax.xaxis.set_major_formatter(formatter)
 
-        # format x labels
-        major_locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
-        minor_locator = mdates.AutoDateLocator(minticks=3*4, maxticks=8*4)
-        formatter = mdates.ConciseDateFormatter(major_locator)
-        ax.xaxis.set_major_locator(major_locator)
-        ax.xaxis.set_minor_locator(minor_locator)
-        ax.xaxis.set_major_formatter(formatter)
-
-        axs[nn].grid(True, which='both')
-        axs[nn].yaxis.set_label_coords(-0.1, 0.5)
+            axs[nx, ny].grid(True, which='both')
+            axs[nx, ny].yaxis.set_label_coords(-0.1, 0.5)
 
     if save_fig:
         filename = 'time' + get_ss_file_name(ss)
@@ -159,10 +166,14 @@ def plot_rel_freq_data(ss, save_fig=False, path=None):
 
     # The energy delivered for the defined FCR product
     # Note: positive fcr power -> discharge battery and vice versa
-    fcr_power = ss.compute_fcr_power(ss.sim_data['df'])
-    dt = (ss.sim_data['t'][1] - ss.sim_data['t'][0]) / np.timedelta64(1, 'h')
-    fcr_energy = fcr_power * dt
-    net_e = [-np.sum(fcr_energy[np.where(fcr_energy < 0)]), np.sum(fcr_energy[np.where(fcr_energy > 0)])]
+    # fcr_power = ss.compute_fcr_power(ss.sim_data['df'])
+    # dt = (ss.sim_data['t'][1] - ss.sim_data['t'][0]) / np.timedelta64(1, 'h')
+    # fcr_energy = fcr_power * dt
+    # net_e = [-np.sum(fcr_energy[np.where(fcr_energy < 0)]), np.sum(fcr_energy[np.where(fcr_energy > 0)])]
+    net_e = np.array([
+        ss.energy['fcr_gross'][0],
+        -ss.energy['fcr_gross'][1]
+    ])
 
     width = 0.3  # the width of the bars
     axs[n].bar(labels, market, width, label='Market')

@@ -13,8 +13,11 @@ from MarketData import MarketData
 import StorageSystem
 import Plotter
 
-DEV = True     # limit data for faster processing
+DEV = False     # limit data for faster processing
 DT = 5          # seconds
+
+# Decimation factor for logging economic sim
+ECON_LOG_DEC = 12
 
 # level to inc/red transaction triggers when adjusting them in order to meet PQ requirements
 TRAN_TRIGGER_ADJUST = 0.02
@@ -119,6 +122,7 @@ def run_economic_simulation(systems, duration=None):
     md = MarketData()
     for system in systems:
         system.link_market_data(md)
+        system.log_decimation = ECON_LOG_DEC
 
     results = run_parallel_simulations(
         data_src=FrequencyData.DATA_PATH + '/202*_Frequenz.csv',
