@@ -40,8 +40,8 @@ ENERGY_TAX = 0.19
 FCR_TAX = 0.19
 
 # General:
-investment_horizon = 20
-capital_costs = 0.05  # % per year
+investment_horizon = 20*12
+capital_costs = 0.004  # % per year
 
 # UPFRONT INVESTMENT:
 costs_installed_capacity = 226151  # Euro/MWh (2,75 Euro * 1 MWh / (3,2V * 3,8 Ah))
@@ -50,8 +50,8 @@ land_acquisition_costs = 0  # Euro
 installation_labour_equipment_costs = 70000  # Euro/MWh
 
 # Recurring Costs:
-maintenance_and_repair = 0.01  # TODO: Find assumtion (%/MWh)
-monitoring_labour_costs = 15000  # Euro/year
+maintenance_and_repair = 0.01/12  # TODO: Find assumtion (%/MWh)
+monitoring_labour_costs = 15000/12  # Euro/year
 supply_energy_costs = 0  # kWh/year
 
 # Aging etc.
@@ -391,7 +391,8 @@ class StorageSystem:
 
         # cycles_at_defined_dod = 3000 + (capacity/0.25 - 25)*500 #dummy
         # expected_lifetime = int(cycles_at_defined_dod / (cycles_per_day * 365)) # TODO: Better calculation
-        storage_lifetime = int(self.battery.estimate_lifespan(self.get_year_fraction()))
+        storage_lifetime = int(self.battery.estimate_lifespan(self.get_year_fraction())*12)
+
 
         #CAPEX:
         #Points of investments:
@@ -445,9 +446,9 @@ class StorageSystem:
         annuity_factor = capital_costs * a / (a - 1)
 
         return {
-            'capex':    npv_capex * annuity_factor,
-            'opex':     npv_opex * annuity_factor,
-            'total':    (npv_capex + npv_opex) * annuity_factor
+            'capex':    npv_capex * annuity_factor * 12,
+            'opex':     npv_opex * annuity_factor * 12,
+            'total':    (npv_capex + npv_opex) * annuity_factor * 12
         }
 
 
