@@ -501,15 +501,16 @@ class StorageSystem:
 
             price = self.market_data.da_df.at[da_product_start, 'price']
             year = transaction.start_time.year
+            month = transaction.start_time.month - 1
 
             if transaction.power > 0:
                 if year not in sold:
-                    sold[year] = 0
-                sold[year] += price * transaction.power * TRANSACTION_DURATION * (1 - markdown)
+                    sold[year] = np.zeros(12, dtype=np.float32)
+                sold[year][month] += price * transaction.power * TRANSACTION_DURATION * (1 - markdown)
             else:
                 if year not in bought:
-                    bought[year] = 0
-                bought[year] -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
+                    bought[year] = np.zeros(12, dtype=np.float32)
+                bought[year][month] -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
 
         return annuitize_yearly_sums(sold, year_fraction), annuitize_yearly_sums(bought, year_fraction)
 
@@ -638,13 +639,15 @@ def get_linear_interpolation(pt_a, pt_b, x):
 
 
 def annuitize_yearly_sums(yearly_sums, n_years):
+    m = 12
     npv = 0
     years = list(yearly_sums.keys())
     years.sort()
-    for index, year in enumerate(years):
-        npv += math.pow(1 + COST_OF_CAPITAL, index) * yearly_sums[year]
+    for i, year in enumerate(years):
+        for j, monthly_total in enumerate(yearly_sums[year]):
+            npv += monthly_total / math.pow(1 + COST_OF_CAPITAL/m, i * m + j)
 
-    a = math.pow(1 + COST_OF_CAPITAL, n_years - 1)
-    annuity_factor = COST_OF_CAPITAL * a / (a - 1)
+    a = math.pow(1 + COST_OF_CAPITAL/m, math.ceil(m*n_years - 1))
+    annuity_factor = COST_OF_CAPITAL * a / (a - 1) if a != 1 else 1
 
     return npv * annuity_factor
