@@ -1,3 +1,4 @@
+import glob
 import json
 import math
 from datetime import timedelta
@@ -13,40 +14,99 @@ from MarketData import MarketData
 import StorageSystem
 import Plotter
 
-DEV = True     # limit data for faster processing
-DT = 5          # seconds
+DEV = False     # limit data for faster processing
+DT = 30         # seconds
+
+# Decimation factor for logging economic sim
+ECON_LOG_DEC = 5 * 60 / DT
 
 # level to inc/red transaction triggers when adjusting them in order to meet PQ requirements
-TRAN_TRIGGER_ADJUST = 0.02
+TRAN_TRIGGER_ADJUST = 0.01
+
+# where valid configurations are stored
+VALID_CONFIGS_FILE = 'data/valid_configs/valid_configs.json'
 
 
 # optimize configurations
 def optimize_configurations():
+    valid_systems = get_valid_configurations()
+
+    duration = None
+    if DEV:
+        duration = timedelta(days=2)
+
+    results = run_economic_simulation(valid_systems, duration=duration)
+    results.sort()
+
+    Plotter.plot_summary(results, save_fig=True, path='figures/')
+
+
+def run_economic_simulation(systems, duration=None):
+    print("Evaluating economics for {} configurations.".format(len(systems)))
+
+    # market data is too small to use shared memory
+    md = MarketData()
+    for system in systems:
+        system.link_market_data(md)
+        system.log_decimation = ECON_LOG_DEC
+
+    results = run_parallel_simulations(
+        data_src=FrequencyData.DATA_PATH + '/202*_Frequenz.csv',
+        duration=duration,
+        dt=DT,
+        storage_systems=systems,
+        plot_path='figures/economic/',
+        till_death=True
+    )
+
+    return results
+
+
+def get_valid_configurations():
+    files = glob.glob("{}".format(VALID_CONFIGS_FILE))
+
+    if len(files) != 1:
+        create_configurations()
+
+    valid_systems = []
+    with open(VALID_CONFIGS_FILE) as f:
+        system_configs = json.load(f)
+        import Battery
+        for battery_type, system_config in system_configs.items():
+            for size, params in system_config['sizes'].items():
+                battery_class_name = getattr(Battery, battery_type)
+                battery = battery_class_name(capacity_nominal=float(size))
+                ss = StorageSystem.StorageSystem(
+                    battery=battery,
+                    p_market=system_config['p_market'],
+                    p_max=system_config['p_max'],
+                    soc_target=system_config['soc_target'],
+                    validation_data=system_config['sizes']
+                )
+                valid_systems.append(ss)
+
+    return valid_systems
+
+
+def create_configurations():
     batteries = [
         Battery.LFPBattery
     ]
 
     systems = []
-    capacities = []
     for battery_type in batteries:
-        systems, capacities = create_configurations(battery_type=battery_type)
-
-    # get non-duplicated list
-    capacities = set(capacities)
+        systems, capacities = init_unvalidated_configurations(battery_type=battery_type)
 
     duration = None
     if DEV:
         duration = timedelta(days=2)
 
     valid_systems = validate_configurations(systems, duration=duration)
-
-    results = run_economic_simulation(valid_systems, duration=duration)
-    results.sort()
-
-    Plotter.plot_summary(results, capacities, save_fig=True, path='figures/')
+    valid_systems.sort()
+    store_valid_systems(valid_systems)
 
 
-def create_configurations(soc_target=0.5, battery_type=None, battery_args=None):
+def init_unvalidated_configurations(soc_target=0.5, battery_type=None, battery_args=None):
     if battery_type is None:
         battery_type = Battery.Battery
     if battery_args is None:
@@ -112,33 +172,37 @@ def validate_configurations(systems, depth=1, duration=None):
         return valid_systems
 
 
-def run_economic_simulation(systems, duration=None):
-    print("Evaluating economics for {} configurations.".format(len(systems)))
+# Store valid configurations for later use in the economic portion
+def store_valid_systems(valid_systems):
+    systems = {}
+    for system in valid_systems:
+        battery = type(system.battery).__name__
+        if battery not in systems:
+            systems[battery] = {
+                'p_market': system.p_market,
+                'p_max': system.p_max,
+                'soc_target': system.soc_target,
+                'sizes': {}
+            }
+        systems[battery]['sizes'][system.battery.capacity_nominal] = {
+            'soc_max': system.soc_max,
+            'soc_min': system.soc_min,
+            'buy': system.soc_buy_trigger,
+            'sell': system.soc_sell_trigger
+        }
 
-    # market data is too small to use shared memory
-    md = MarketData()
-    for system in systems:
-        system.link_market_data(md)
-
-    results = run_parallel_simulations(
-        data_src=FrequencyData.DATA_PATH + '/202*_Frequenz.csv',
-        duration=duration,
-        dt=DT,
-        storage_systems=systems,
-        plot_path='figures/economic/'
-    )
-
-    return results
+    with open(VALID_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(systems, f, ensure_ascii=False, indent=4)
 
 
-def run_parallel_simulations(data_src, duration, dt, storage_systems, plot_path=None):
+def run_parallel_simulations(data_src, duration, dt, storage_systems, plot_path=None, till_death=False):
     shm_links, freq = load_sharable_block(data_src=data_src, duration=duration, dt=dt)
 
-    systems = map(lambda ss: (freq, dt, ss, plot_path), storage_systems)
+    systems = map(lambda ss: (freq, dt, ss, plot_path, till_death), storage_systems)
 
     results = []
     try:
-        with Pool(processes=min(8, cpu_count())) as pool:
+        with Pool(processes=min(9, cpu_count())) as pool:
             for result in tqdm.tqdm(
                 pool.imap_unordered(simulate_storage_config_star, systems),
                 total=len(storage_systems)
@@ -191,21 +255,40 @@ def simulate_storage_config_star(args):
     return simulate_storage_config(*args)
 
 
-def simulate_storage_config(freq_info, dt, ss, plot_path=None):
+def simulate_storage_config(freq_info, dt, ss, plot_path=None, till_death=False):
 
     index_shm = shared_memory.SharedMemory(name=freq_info['index'])
     freq_shm = shared_memory.SharedMemory(name=freq_info['freq'])
     index = np.ndarray((freq_info['size'],), dtype='datetime64[s]', buffer=index_shm.buf)
     freq = np.ndarray((freq_info['size'],), dtype=np.float32, buffer=freq_shm.buf)
 
-    ss.init_sim_data(freq.size)
-    current_day = None
-    for i in range(0, freq.size):
-        t1 = pd.Timestamp(index[i])
-        ss.execute_step(freq=freq[i], dt=dt, t=t1)
-        if current_day is None or current_day != t1.date().day:
-            current_day = t1.date().day
-            # print("Currently evaluating {}".format(t1.date()))
+    end_of_life = False
+    n = 0
+    time_increment = pd.Timestamp(index[-1]) - pd.Timestamp(index[0]) + timedelta(seconds=dt)
+    current_month = pd.Timestamp(index[0]).month
+    try:
+        while not end_of_life:
+            ss.init_sim_data(freq.size, extend=True)
+            for i in range(0, freq.size):
+                t1 = pd.Timestamp(index[i])
+                t2 = t1 + n * time_increment
+                ss.execute_step(freq=freq[i], dt=dt, t=t1, t_star=t2)
+
+                if t1.month != current_month and till_death:
+                    current_month = t1.month
+                    end_of_life = ss.compute_soc_limits()
+                    if end_of_life:
+                        ss.trim_sim_data()
+                        raise StopIteration
+
+            if till_death:
+                n += 1
+                if DEV and n > 2:
+                    raise StopIteration
+            else:
+                raise StopIteration
+    except StopIteration:
+        pass
 
     if plot_path is not None:
         Plotter.plot_time_curves(ss, save_fig=True, path=plot_path)
