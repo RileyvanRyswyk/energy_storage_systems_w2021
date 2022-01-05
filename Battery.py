@@ -172,8 +172,47 @@ class LFPBattery(Battery):
         self.name = "LFP"   # must be unique
 
     def estimate_lifespan(self, year_fraction):
-        # TODO
-        return min(self.CALENDER_LIFESPAN, 3000 / self.eq_full_cycle_count * year_fraction)
+        # calendar lifetime:
+        soc = 50    # SOC in %
+        T = 30      # Temperature in C°
+        N = 20      # aging time frame
+        t = N*12
+
+        # fitted curve for calendar aging
+        calendar_capacity_fade = np.zeros(t)
+        for t in range(t):
+            calendar_capacity_fade[t] = 0.0025 * pow(np.e, 0.1099 * T) * pow(np.e, 0.0169 * soc) * \
+                                        pow(t, (-3.866 * pow(10, -13)) * pow(T, 6.635) +
+                                            (-4.853 * pow(10, -12)) * pow(soc, 5.508) + 0.9595) + 0.7
+
+        for i, c in enumerate(calendar_capacity_fade):
+            if (c >= 20):
+                self.CALENDER_LIFESPAN = i
+                break
+
+        # cycle lifetime
+        doc = 0.8   # cycle depth of used data for fitted curve
+        c_rate = 0.2    # conservative c_rate due to too low c_rates for fitted curve
+        fec = self.eq_full_cycle_count / year_fraction  # cycles per year
+
+        k_crate = 0.0630 * c_rate + 0.0971  # c-rate dependent factor
+        k_doc = 4.02 * pow(doc - 0.6, 3) + 1.0923   # dod dependent factor
+        k_T = 1     # temperature dependent factor(1 for ambient temperatures)
+
+        cycle_capacity_fade = np.zeros(t)
+        for i, t in enumerate(range(t)):
+            k_fec = pow(fec * t/12, 0.5)    # full equivalent cycle dependent factor
+            cycle_capacity_fade[i] = k_crate * k_doc * k_fec * k_T
+
+        combined_lifetime = 0
+        for i in range(t):
+            comb_fade = calendar_capacity_fade[i] + cycle_capacity_fade[i]
+            if (comb_fade >= 20):
+                combined_lifetime = i
+                break
+
+        return(combined_lifetime/12)
+        #return min(self.CALENDER_LIFESPAN, 3000 / self.eq_full_cycle_count * year_fraction)
 
     def update_capacity(self):
         if self.elapsed_time == 0:
