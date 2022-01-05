@@ -2,8 +2,9 @@
 
 class Transaction:
 
-    def __init__(self, start_time, duration, power):
-        self.start_time = start_time
+    def __init__(self, base_start_time, start_time, duration, power):
+        self.base_start_time = base_start_time  # market data time
+        self.start_time = start_time            # simulation time
         self.end_time = start_time + duration
         self.power = power
 

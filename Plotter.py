@@ -45,7 +45,7 @@ def plot_time_curves(ss, save_fig=False, path=None):
 
     # 3. Transaction Power
     nx += 1
-    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'])
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'], linewidth=0.25 )
     axs[nx, ny].set_ylabel('Trans. Power [MW]')
     axs[nx, ny].text(1.025, 0.5, "Sold: {:.2f} MWh\nBought: {:.2f} MWh".format(*ss.get_total_trans_volume()),
                 horizontalalignment='left', verticalalignment='center', transform=axs[nx, ny].transAxes,
@@ -66,10 +66,32 @@ def plot_time_curves(ss, save_fig=False, path=None):
     axs[nx, ny].set_ylabel('SOC [%]')
     axs[nx, ny].set_ylim((0, 1))
     axs[nx, ny].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=1))
-    axs[nx, ny].hlines([ss.soc_max, ss.soc_min], ss.sim_data['t'][0], ss.sim_data['t'][-1],
-                  color=PURPLE, linestyles='dashed', alpha=0.8, label='SOC limits')
-    axs[nx, ny].hlines([ss.soc_sell_trigger, ss.soc_buy_trigger], ss.sim_data['t'][0], ss.sim_data['t'][-1],
-                  color=GREEN, linestyles='dashdot', alpha=0.8, label='Trade triggers')
+
+    start_time = ss.sim_data['t'][0]
+    end_times = ss.soc_limit_data['valid_until'] + [ss.sim_data['t'][-1]]
+    soc_max = np.zeros_like(ss.sim_data['t'], dtype=np.float32)
+    soc_min = np.zeros_like(ss.sim_data['t'], dtype=np.float32)
+    soc_buy = np.zeros_like(ss.sim_data['t'], dtype=np.float32)
+    soc_sell = np.zeros_like(ss.sim_data['t'], dtype=np.float32)
+
+    for index, end_time in enumerate(end_times):
+        indices = np.where(np.bitwise_and(ss.sim_data['t'] >= start_time, ss.sim_data['t'] <= end_time))
+        soc_max[indices] = ss.soc_limit_data['soc_max'][index]
+        soc_min[indices] = ss.soc_limit_data['soc_min'][index]
+        soc_buy[indices] = ss.soc_limit_data['buy_soc'][index]
+        soc_sell[indices] = ss.soc_limit_data['sell_soc'][index]
+        start_time = end_time
+
+    axs[nx, ny].plot(ss.sim_data['t'], soc_max, color=PURPLE, linestyle='dashed', alpha=0.8, label='SOC limits')
+    axs[nx, ny].plot(ss.sim_data['t'], soc_min, color=PURPLE, linestyle='dashed', alpha=0.8, label=None)
+    axs[nx, ny].plot(ss.sim_data['t'], soc_buy, color=GREEN, linestyle='dashdot', alpha=0.8, label='Trade triggers')
+    axs[nx, ny].plot(ss.sim_data['t'], soc_sell, color=GREEN, linestyle='dashdot', alpha=0.8, label=None)
+
+    # axs[nx, ny].hlines([ss.soc_max, ss.soc_min], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+    #               color=PURPLE, linestyles='dashed', alpha=0.8, label='SOC limits')
+    # axs[nx, ny].hlines([ss.soc_sell_trigger, ss.soc_buy_trigger], ss.sim_data['t'][0], ss.sim_data['t'][-1],
+    #               color=GREEN, linestyles='dashdot', alpha=0.8, label='Trade triggers')
+
     axs[nx, ny].hlines([ss.soc_target], ss.sim_data['t'][0], ss.sim_data['t'][-1],
                   color=AMBER, linestyles='dotted', alpha=0.8, label='SOC Target')
 
@@ -205,12 +227,16 @@ def plot_rel_freq_data(ss, save_fig=False, path=None):
     axs[n].xaxis.set_major_formatter(PercentFormatter(xmax=1))
     axs[n].set_ylim((0, 0.1))
     axs[n].set_xlabel('Battery SOC [%]')
-    axs[n].vlines([ss.soc_max, ss.soc_min], 0, 1,
-                  color=PURPLE, linestyles='dashed', label='SOC limits')
-    axs[n].vlines([ss.soc_sell_trigger, ss.soc_buy_trigger], 0, 1,
-                  color=GREEN, linestyles='dashdot', label='Trade triggers')
+    # axs[n].vlines([ss.soc_max, ss.soc_min], 0, 1,
+    #               color=PURPLE, linestyles='dashed', label='SOC limits')
+    # axs[n].vlines([ss.soc_sell_trigger, ss.soc_buy_trigger], 0, 1,
+    #               color=GREEN, linestyles='dashdot', label='Trade triggers')
     axs[n].vlines([ss.soc_target], 0, 1,
                   color=AMBER, linestyles='dotted', label='Target SOC')
+    axs[n].vlines(get_min_max(ss.soc_limit_data['soc_max']) + get_min_max(ss.soc_limit_data['soc_min']),
+                  0, 1, color=PURPLE, linestyles='dashed', label='SOC limits')
+    axs[n].vlines(get_min_max(ss.soc_limit_data['buy_soc']) + get_min_max(ss.soc_limit_data['sell_soc']),
+                  0, 1, color=GREEN, linestyles='dashdot', label='Trade triggers')
     axs[n].legend()
     axs[n].grid(True, which='both')
     axs[n].set_ylabel('Relative Frequency')
@@ -224,13 +250,19 @@ def plot_rel_freq_data(ss, save_fig=False, path=None):
         plt.show()
 
 
-def plot_summary(storage_systems, capacities, save_fig=False, path=None):
+def plot_summary(storage_systems, save_fig=False, path=None):
 
     start_date = np.datetime64(storage_systems[0].sim_data['t'][0], 'D')
     end_date = np.datetime64(storage_systems[0].sim_data['t'][-1], 'D')
     p_market = storage_systems[0].p_market
     fig, axs = plt.subplots(tight_layout=True, figsize=(10, 8))     # width, height
-    fig.suptitle('Revenue Evaluation, Marketable Power = {:.0f} MWh: {} to {}'.format(p_market, start_date, end_date))
+    fig.suptitle('Revenue Evaluation, Marketable Power = {:.0f} MWh'.format(p_market))
+
+    capacities = []
+    for system in storage_systems:
+        capacities.append(system.battery.capacity_nominal)
+    # get non-duplicated list
+    capacities = set(capacities)
 
     axs = [
         plt.subplot(221),
@@ -295,7 +327,7 @@ def plot_summary(storage_systems, capacities, save_fig=False, path=None):
 
     capacity_spread = max(capacities) - min(capacities)
     dx = capacity_spread * np.linspace(-1/2, 1/2, n_batt_types, endpoint=True) if n_batt_types > 1 else np.array([0])
-    width = 0.5 / n_batt_types / capacity_spread
+    width = 0.4 / n_batt_types / capacity_spread
     for bat_type_index, battery_type in enumerate(battery_types.keys()):
         x1 = []
         y_capex = []
@@ -348,7 +380,7 @@ def plot_summary(storage_systems, capacities, save_fig=False, path=None):
         y = []
         for system, _, _ in battery_types[battery_type]:
             year_fraction = system.get_year_fraction()
-            est_life = system.battery.estimate_lifespan(year_fraction)
+            est_life = system.estimate_life_span()
             x.append(system.battery.capacity_nominal)
             y.append(est_life)
         axs[n].plot(x, y, c=colours[bat_type_index], label=battery_type)
@@ -366,14 +398,25 @@ def plot_summary(storage_systems, capacities, save_fig=False, path=None):
         plt.show()
 
 
+def get_min_max(arr):
+    return [min(arr), max(arr)]
+
+
 def get_ss_file_name(ss):
-    return '_{}_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+    # return '_{}_e{:.2f}_tr{:.2f}_nc{:.2f}_nd{:.2f}_nsd{:.2f}_soc{:.2f}_delay{:.2f}'.format(
+    #         ss.battery.name,
+    #         ss.battery.capacity_nominal,
+    #         ss.soc_sell_trigger - 0.5,
+    #         ss.battery.eta_char,
+    #         ss.battery.eta_disc,
+    #         ss.battery.eta_self_disc_s,
+    #         ss.soc_target,
+    #         StorageSystem.TRANSACTION_DELAY
+    #     )
+    return '_{}_e{:.2f}_tr{:.2f}_soc{:.2f}_delay{:.2f}'.format(
             ss.battery.name,
             ss.battery.capacity_nominal,
             ss.soc_sell_trigger - 0.5,
-            ss.battery.eta_char,
-            ss.battery.eta_disc,
-            ss.battery.eta_self_disc_s,
             ss.soc_target,
             StorageSystem.TRANSACTION_DELAY
         )

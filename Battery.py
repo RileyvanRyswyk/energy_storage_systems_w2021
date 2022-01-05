@@ -9,7 +9,7 @@ UPDATE_CAPACITY_EVERY_N_S = 3600  # every hour
 class Battery:
 
     # maximum expected battery lifespan in years
-    CALENDER_LIFESPAN = 10
+    CALENDER_LIFESPAN = 12
 
     # The battery is modeled at a high level with considerations for:
     #   (i)     Energy
@@ -162,7 +162,7 @@ class Battery:
 
 class LFPBattery(Battery):
 
-    CALENDER_LIFESPAN = 10
+    CALENDER_LIFESPAN = 12
 
     def __init__(self, **kwargs):
         kwargs['eta_char'] = 0.90
