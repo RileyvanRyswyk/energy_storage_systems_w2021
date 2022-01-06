@@ -224,7 +224,17 @@ class LFPBattery(Battery):
         cap_fade_cal = 0.0025 * (math.e ** (0.1099 * temp)) * (math.e ** (0.0169 * soc)) \
                        * t ** (-3.866e-13 * temp ** 6.635 - 4.853e-12 * soc ** 5.508 + 0.9595) + 0.7
 
-        cap_fade_cycle = 20 * self.eq_full_cycle_count / 3000
+        # cap_fade_cycle = 20 * self.eq_full_cycle_count / 3000
+        # cycle lifetime
+        doc = 0.8  # cycle depth of used data for fitted curve
+        c_rate = 0.2  # conservative c_rate due to too low c_rates for fitted curve
+
+        k_crate = 0.0630 * c_rate + 0.0971  # c-rate dependent factor
+        k_doc = 4.02 * pow(doc - 0.6, 3) + 1.0923  # dod dependent factor
+        k_temp = 1  # temperature dependent factor(1 for ambient temperatures)
+        k_fec = pow(self.eq_full_cycle_count, 0.5)
+
+        cap_fade_cycle = k_crate * k_doc * k_fec * k_temp
 
         cap_fade = (cap_fade_cycle + cap_fade_cal) / 100
 

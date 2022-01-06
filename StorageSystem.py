@@ -39,9 +39,12 @@ ENERGY_FEES = (0.305 + 0.416 + 0.005 + 2.05) * 1e-2 * 1e3   # € / MWh
 ENERGY_TAX = 0.19
 FCR_TAX = 0.19
 
+# Interest rate WACC
+COST_OF_CAPITAL = 0.05
+
 # General:
-investment_horizon = 20*12
-capital_costs = 0.004  # % per year
+investment_horizon = 20*12  # months
+capital_costs = COST_OF_CAPITAL / 12  # % per month
 
 # UPFRONT INVESTMENT:
 costs_installed_capacity = 226151  # Euro/MWh (2,75 Euro * 1 MWh / (3,2V * 3,8 Ah))
@@ -432,12 +435,16 @@ class StorageSystem:
                 power=-(self.p_max - self.p_market)
             ))
 
+    # return the annualized revenues and costs (as an annuity)
     def compute_annual_var_financials(self, markup, markdown):
-        sold_eur, bought_eur = self.get_trans_revenue(markup, markdown)
+        year_fraction = self.get_year_fraction()
+        sold_eur_ann, bought_eur_ann = self.get_trans_revenue(markup, markdown, year_fraction)
         sold_mwh, bought_mwh = self.get_total_trans_volume()
         losses = self.battery.accumulated_losses
-        avg_purchase_price = (bought_eur / bought_mwh) if bought_mwh > 0 else 0
+        avg_purchase_price = (bought_eur_ann * year_fraction / bought_mwh) if bought_mwh > 0 else 0
 
+        # same every year for each system
+        # no need to convert to npv and back to annuity
         fcr_unit_revenue = 0
         for start_time, active_frac in self.fcr_active.items():
             price = self.market_data.fcr_df.at[start_time, 'price']
@@ -451,15 +458,13 @@ class StorageSystem:
 
             fcr_unit_revenue += active_frac * price
 
-        year_fraction = self.get_year_fraction()
-
         financials = {
             'revenue': {
-                'intraday': annualize_and_round(sold_eur, year_fraction),
+                'intraday': round(sold_eur_ann, 2),
                 'fcr': annualize_and_round(self.p_market * fcr_unit_revenue, year_fraction)
             },
             'costs': {
-                'intraday': annualize_and_round(bought_eur, year_fraction),
+                'intraday': round(bought_eur_ann, 2),
                 'fees': annualize_and_round(ENERGY_FEES * losses, year_fraction),
                 'taxes': annualize_and_round(ENERGY_TAX * avg_purchase_price * losses, year_fraction)
             },
@@ -471,6 +476,7 @@ class StorageSystem:
 
         return financials
 
+    # total sold and bought volumes on the intra-day market (in MWh)
     def get_total_trans_volume(self):
         sold = 0
         bought = 0
@@ -481,9 +487,11 @@ class StorageSystem:
                 bought += transaction.power
         return sold * TRANSACTION_DURATION, -bought * TRANSACTION_DURATION
 
-    def get_trans_revenue(self, markup, markdown):
-        sold = 0
-        bought = 0
+    # amount of revenue, costs from intra-day market transactions
+    # equated into an annuity for multi-year simulations
+    def get_trans_revenue(self, markup, markdown, year_fraction):
+        sold = {}
+        bought = {}
         for transaction in self.transaction_archive:
             # day ahead data comes in one hour intervals
             da_product_start = floor_dt_h(transaction.base_start_time, DA_PRODUCT_LENGTH)
@@ -492,22 +500,32 @@ class StorageSystem:
                 raise Exception('Incomplete day-ahead data: {}'.format(transaction.start_time))
 
             price = self.market_data.da_df.at[da_product_start, 'price']
+            year = transaction.start_time.year
+            month = transaction.start_time.month - 1
 
             if transaction.power > 0:
-                sold += price * transaction.power * TRANSACTION_DURATION * (1 - markdown)
+                if year not in sold:
+                    sold[year] = np.zeros(12, dtype=np.float32)
+                sold[year][month] += price * transaction.power * TRANSACTION_DURATION * (1 - markdown)
             else:
-                bought -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
-        return sold, bought
+                if year not in bought:
+                    bought[year] = np.zeros(12, dtype=np.float32)
+                bought[year][month] -= price * transaction.power * TRANSACTION_DURATION * (1 + markup)
 
+        return annuitize_yearly_sums(sold, year_fraction), annuitize_yearly_sums(bought, year_fraction)
+
+    # Fraction of the year simulated
+    # in the case of multi-year simulations, result is greater than 1
     def get_year_fraction(self):
         dt = self.sim_data['t'][max(0, self.sim_index[1]-1)] - self.sim_data['t'][0]
         return dt / np.timedelta64(1, 'h') / 8760
 
+    # estimated system lifespan in years
     def estimate_life_span(self):
         if self.eol_reached:
-            return round(self.get_year_fraction(), 1)
+            return self.get_year_fraction()
         else:
-            return round(self.battery.estimate_lifespan(self.get_year_fraction()), 1)
+            return self.battery.estimate_lifespan(self.get_year_fraction())
 
     def get_system_cost_annuity(self):
         capacity = self.battery.capacity_nominal
@@ -618,3 +636,18 @@ def get_linear_interpolation(pt_a, pt_b, x):
     b = pt_a[1] - m * pt_a[0]
 
     return m * x + b
+
+
+def annuitize_yearly_sums(yearly_sums, n_years):
+    m = 12
+    npv = 0
+    years = list(yearly_sums.keys())
+    years.sort()
+    for i, year in enumerate(years):
+        for j, monthly_total in enumerate(yearly_sums[year]):
+            npv += monthly_total / math.pow(1 + COST_OF_CAPITAL/m, i * m + j)
+
+    a = math.pow(1 + COST_OF_CAPITAL/m, math.ceil(m*n_years - 1))
+    annuity_factor = COST_OF_CAPITAL * a / (a - 1) if a != 1 else 1
+
+    return npv * annuity_factor
