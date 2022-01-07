@@ -553,7 +553,7 @@ class StorageSystem:
                 points_of_reinvestment.append(t)
 
         # NPV of initial and replacement investments:
-        npv_investment = 0
+        npv_investment = initial_costs
         npv_salvage_value = 0
         for i in points_of_reinvestment:
             price_decrease_factor = 1 - (0.025 * i / 12)  # for decreasing battery and PE prices
