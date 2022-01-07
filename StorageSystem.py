@@ -47,18 +47,23 @@ investment_horizon = 20*12  # months
 capital_costs = COST_OF_CAPITAL / 12  # % per month
 
 # UPFRONT INVESTMENT:
-costs_installed_capacity = 226151  # Euro/MWh (2,75 Euro * 1 MWh / (3,2V * 3,8 Ah))
-costs_power_interface = 70000  # Euro/MW
-land_acquisition_costs = 0  # Euro
-installation_labour_equipment_costs = 70000  # Euro/MWh
+# Onetime:
+costs_grid_integration = 27000  # Euro/MW
+costs_project_development = 70000   # Euro/MWh
+property_costs = 1000000    # Euro
+costs_controls_and_communication = 24000   # Euro/MW
+# (Re)investment:
+costs_construction_and_equipment = 58000    # Euro/MWh
+costs_system_integration = 48500    # Euro/Mwh
+costs_power_equipment = 70000   # Euro/MW
+costs_installed_capacity = 226151   # Euro/MWh (2,75 Euro * 1 MWh / (3,2V * 3,8 Ah))
 
 # Recurring Costs:
-maintenance_and_repair = 0.01/12  # TODO: Find assumtion (%/MWh)
-monitoring_labour_costs = 15000/12  # Euro/year
-supply_energy_costs = 0  # kWh/year
+costs_fixed_o_m = 0.0043/12  # %/month
+monitoring_labour_costs = 15000/12  # Euro/month
 
 # Aging etc.
-recycle_value = 0.1  # %
+end_of_life_price = 0.1     # resell price after end of lifetime
 
 
 class StorageSystem:
@@ -529,21 +534,19 @@ class StorageSystem:
 
     def get_system_cost_annuity(self):
         capacity = self.battery.capacity_nominal
-
-        # cycles_at_defined_dod = 3000 + (capacity/0.25 - 25)*500 #dummy
-        # expected_lifetime = int(cycles_at_defined_dod / (cycles_per_day * 365)) # TODO: Better calculation
         storage_lifetime = int(self.estimate_life_span() * 12)
 
         # CAPEX:
+        energy_dependent_costs = costs_project_development + costs_construction_and_equipment + \
+            costs_system_integration + costs_installed_capacity
+        power_dependent_costs = costs_grid_integration + costs_controls_and_communication + \
+            costs_power_equipment
+        initial_costs = energy_dependent_costs * capacity + power_dependent_costs * self.p_market + \
+                        property_costs
+        installed_costs = costs_power_equipment * self.p_market + costs_installed_capacity * capacity
+
         # Points of investments:
-
-        initial_costs = costs_installed_capacity * capacity + \
-                        self.p_market * costs_power_interface + \
-                        land_acquisition_costs + \
-                        installation_labour_equipment_costs
-
         investment_costs = [initial_costs]
-
         points_of_reinvestment = []
         for t in range(1, investment_horizon):
             if(np.mod(t, storage_lifetime) == 0):
@@ -551,20 +554,27 @@ class StorageSystem:
 
         # NPV of initial and replacement investments:
         npv_investment = 0
+        npv_salvage_value = 0
         for i in points_of_reinvestment:
-            npv_investment += (costs_installed_capacity * capacity + self.p_market * costs_power_interface) * \
-                                      np.power(1 - capital_costs, i)
+            price_decrease_factor = 1 - (0.025 * i / 12)  # for decreasing battery and PE prices
+            npv_investment += ((costs_construction_and_equipment + costs_system_integration + \
+                                costs_installed_capacity * price_decrease_factor) * \
+                                capacity + costs_power_equipment * price_decrease_factor * self.p_market) * \
+                                np.power(1 - capital_costs, i)
 
-            investment_costs.append((costs_installed_capacity * capacity + costs_power_interface * self.p_market))
+            investment_costs.append((costs_construction_and_equipment + costs_system_integration + \
+                                     costs_installed_capacity * price_decrease_factor) * \
+                                     capacity + costs_power_equipment * price_decrease_factor * self.p_market)
+            npv_salvage_value += end_of_life_price * installed_costs * np.power(1 - capital_costs, i)
 
-        if (1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime > recycle_value):
+        if (1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime > end_of_life_price):
             linear_depreciation_factor = 1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime
         else:
-            linear_depreciation_factor = recycle_value
+            linear_depreciation_factor = end_of_life_price
 
-        npv_salvage_value = (linear_depreciation_factor * (costs_power_interface * self.p_market + costs_installed_capacity * capacity) \
-                    + land_acquisition_costs) * np.power(1 - capital_costs, investment_horizon)
-
+        npv_salvage_value += (linear_depreciation_factor * installed_costs + property_costs) * \
+                             np.power(1 - capital_costs, investment_horizon)
+        print(npv_salvage_value)
         npv_capex = npv_investment - npv_salvage_value
 
         # OPEX:
@@ -573,22 +583,21 @@ class StorageSystem:
         yearly_expenses_supply_costs = []
         for t in range(investment_horizon):
             # Sauer Lecture OPEX Calculation - Maintenance
-            yearly_expenses_maintenance.append(np.power((1-capital_costs),t) * \
-            maintenance_and_repair * capacity * costs_installed_capacity)
-            # Labour and energy supply costs
-            yearly_expenses_labour.append(np.power((1-capital_costs),t) * monitoring_labour_costs)
-            yearly_expenses_supply_costs.append(np.power((1-capital_costs),t) * supply_energy_costs)
+            yearly_expenses_maintenance.append(np.power((1 - capital_costs), t) * \
+                                               costs_fixed_o_m * capacity * costs_installed_capacity)
+            # Labour costs
+            yearly_expenses_labour.append(np.power((1 - capital_costs), t) * monitoring_labour_costs)
 
-        npv_opex = np.sum(yearly_expenses_maintenance + yearly_expenses_labour + yearly_expenses_supply_costs)
+            npv_opex = np.sum(yearly_expenses_maintenance + yearly_expenses_labour + yearly_expenses_supply_costs)
 
         # annuity factor
         a = math.pow(1 + capital_costs, investment_horizon)
         annuity_factor = capital_costs * a / (a - 1)
 
         return {
-            'capex':    npv_capex * annuity_factor * 12,
-            'opex':     npv_opex * annuity_factor * 12,
-            'total':    (npv_capex + npv_opex) * annuity_factor * 12
+            'capex': npv_capex * annuity_factor * 12,
+            'opex': npv_opex * annuity_factor * 12,
+            'total': (npv_capex + npv_opex) * annuity_factor * 12
         }
 
 
