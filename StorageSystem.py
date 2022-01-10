@@ -533,6 +533,8 @@ class StorageSystem:
             return self.battery.estimate_lifespan(self.get_year_fraction())
 
     def get_system_cost_annuity(self):
+        print("_______________________________________________")
+        print("System with", self.battery.capacity_nominal, "MWh capacity:")
         capacity = self.battery.capacity_nominal
         storage_lifetime = int(self.estimate_life_span() * 12)
 
@@ -544,19 +546,21 @@ class StorageSystem:
         initial_costs = energy_dependent_costs * capacity + power_dependent_costs * self.p_market + \
                         property_costs
         installed_costs = costs_power_equipment * self.p_market + costs_installed_capacity * capacity
-
+        print("Initial costs: ", initial_costs)
+        print("Initial installed costs (t=0): ", installed_costs)
         # Points of investments:
         investment_costs = [initial_costs]
         points_of_reinvestment = []
         for t in range(1, investment_horizon):
             if(np.mod(t, storage_lifetime) == 0):
                 points_of_reinvestment.append(t)
-
+        print("Reinvestments in year: ", np.around((np.divide(points_of_reinvestment, 12))))
         # NPV of initial and replacement investments:
         npv_investment = initial_costs
         npv_salvage_value = 0
         for i in points_of_reinvestment:
             price_decrease_factor = 1 - (0.025 * i / 12)  # for decreasing battery and PE prices
+            print("Battery market price decrease at", i / 12, " years: ", round(1 - price_decrease_factor, 3))
             npv_investment += ((costs_construction_and_equipment + costs_system_integration + \
                                 costs_installed_capacity * price_decrease_factor) * \
                                 capacity + costs_power_equipment * price_decrease_factor * self.p_market) * \
@@ -571,10 +575,11 @@ class StorageSystem:
             linear_depreciation_factor = 1 - (investment_horizon - np.max(points_of_reinvestment)) / storage_lifetime
         else:
             linear_depreciation_factor = end_of_life_price
-
+        print("Investment costs: ", np.around(investment_costs, 2))
         npv_salvage_value += (linear_depreciation_factor * installed_costs + property_costs) * \
                              np.power(1 - capital_costs, investment_horizon)
-        print(npv_salvage_value)
+        print("Deprecation factor: ", linear_depreciation_factor)
+        print("SALVAGE VALUE NPV:", round(npv_salvage_value, 1))
         npv_capex = npv_investment - npv_salvage_value
 
         # OPEX:
@@ -593,7 +598,9 @@ class StorageSystem:
         # annuity factor
         a = math.pow(1 + capital_costs, investment_horizon)
         annuity_factor = capital_costs * a / (a - 1)
-
+        print("CAPEX NPV: ", npv_capex)
+        print("OPEX NPV: ", npv_opex)
+        print("TOTAL NPV: ", (npv_capex + npv_opex))
         return {
             'capex': npv_capex * annuity_factor * 12,
             'opex': npv_opex * annuity_factor * 12,
