@@ -1,4 +1,6 @@
-from Battery import Battery
+from datetime import timedelta
+
+from Battery import Battery, LFPBattery
 from FrequencyData import FrequencyData
 from StorageSystem import StorageSystem
 import Plotter
@@ -13,13 +15,13 @@ def simulate_storage(duration):
     # https://www.mdpi.com/2313-0105/2/3/29/pdf section 5.1
     # from Energy Neighbour project, self discharge is negligible during constant operation
     # losses primarily from power electronics, auxillary equipment
-    battery = Battery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.5)
-    ss = StorageSystem(battery, p_market=5, p_max=6.25, soc_target=0.6)
+    battery = LFPBattery(eta_char=0.90, eta_disc=0.90, eta_self_disc=0, capacity_nominal=7.75)
+    ss = StorageSystem(battery, p_market=5, p_max=6.25, soc_target=0.5, buy_trigger=0.453, sell_trigger=0.547)
 
     ss.init_sim_data(len(data))
     current_day = None
     for row in data.itertuples(index=True):
-        ss.execute_step(freq=row.freq, dt=dt, t=row.Index)
+        ss.execute_step(freq=row.freq, dt=dt, t=row.Index, t_star=row.Index)
         if current_day is None or current_day != row.Index.date().day:
             current_day = row.Index.date().day
             print("Currently evaluating {}".format(row.Index.date()))
@@ -28,8 +30,8 @@ def simulate_storage(duration):
     print("End SOC: {:.2%}".format(ss.battery.soc))
     print("End Energy Gain: {:.2f} MWh".format((ss.battery.soc-ss.battery.starting_soc) * ss.battery.capacity_nominal))
 
-    Plotter.plot_time_curves(ss)
-    Plotter.plot_rel_freq_data(ss)
+    Plotter.plot_time_curves(ss, save_fig=True, path='figures/load_profiles/')
+    Plotter.plot_rel_freq_data(ss, save_fig=True, path='figures/load_profiles/')
 
 
 if __name__ == "__main__":

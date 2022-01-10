@@ -4,6 +4,7 @@ import io
 import json
 import math
 import re
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,33 @@ class MarketData:
     def __init__(self, start=None, end=None):
         self.da_df = load_day_ahead_data()
         self.fcr_df = map_market_data(load_fcr_data())
+
+    def get_fcr_data_subset(self, duration=None, offset=datetime.timedelta()):
+        return get_data_subset(self.fcr_df, duration, offset)
+
+    def get_da_data_subset(self, duration=None, offset=datetime.timedelta()):
+        return get_data_subset(self.da_df, duration, offset)
+
+
+def get_data_subset(data, duration=None, offset=datetime.timedelta()):
+    start_date = data.first_valid_index() + offset
+    last_date = data.last_valid_index()
+
+    if duration is None:
+        end_date = last_date
+    else:
+        end_date = start_date + duration
+
+    if start_date > last_date:
+        raise "Offset too large! The requested start date extends beyond the available data"
+
+    if end_date > last_date:
+        warnings.warn("End date exceeds available data. Truncating end date.")
+        end_date = last_date
+
+    # Filter to desired date range
+    filtered_df = data.loc[start_date:end_date]
+    return filtered_df
 
 
 # load all day ahead files in the data path
@@ -48,7 +76,7 @@ def load_fcr_data():
         ))
     df = pd.concat(frames)
 
-    return df
+    return df.loc[df['price'] != "-"]
 
 
 def map_market_data(df):

@@ -1,3 +1,4 @@
+import datetime
 import math
 
 import numpy as np
@@ -11,6 +12,9 @@ from matplotlib.ticker import PercentFormatter, LinearLocator
 import seaborn as sns
 
 import StorageSystem
+from Battery import Battery
+from FrequencyData import FrequencyData
+from MarketData import MarketData
 
 BLUE = '#2CBDFE'
 GREEN = '#47DBCD'
@@ -45,7 +49,7 @@ def plot_time_curves(ss, save_fig=False, path=None):
 
     # 3. Transaction Power
     nx += 1
-    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'], linewidth=0.25 )
+    axs[nx, ny].plot(ss.sim_data['t'], ss.sim_data['p_soc_trans'], linewidth=0.25)
     axs[nx, ny].set_ylabel('Trans. Power [MW]')
     axs[nx, ny].text(1.025, 0.5, "Sold: {:.2f} MWh\nBought: {:.2f} MWh".format(*ss.get_total_trans_volume()),
                 horizontalalignment='left', verticalalignment='center', transform=axs[nx, ny].transAxes,
@@ -398,6 +402,106 @@ def plot_summary(storage_systems, save_fig=False, path=None):
         plt.show()
 
 
+def fcr_overview_graphic():
+    md = MarketData()
+    fd = FrequencyData(FrequencyData.DATA_PATH + '/202111_Frequenz.csv')
+    data = fd.get_data_subset(duration=datetime.timedelta(days=1), dt=5)
+    ss = StorageSystem.StorageSystem(p_market=1)
+    power = ss.compute_fcr_power(data['freq'] - 50)
+    fcr_price = md.get_fcr_data_subset(duration=datetime.timedelta(days=1), offset=datetime.timedelta(days=335))
+
+    fig, axs = plt.subplots(3, 1, constrained_layout=True, figsize=(5, 8), sharex=True)
+    fig.suptitle('FCR Product')
+
+    # 1. System Frequency
+    nx = 0
+    axs[nx].plot(data.index, data['freq'], linewidth=0.25)
+    axs[nx].set_ylabel('Sys Freq [Hz]')
+
+    # 1. FCR Power
+    nx += 1
+    axs[nx].plot(data.index, power, linewidth=0.25)
+    axs[nx].set_ylabel('FCR Power [MW]')
+
+    # 2. Price
+    nx += 1
+    # axs[nx].step(da_price.index, da_price['price'], linewidth=0.5)
+    axs[nx].step(fcr_price.index, fcr_price['price'])
+    axs[nx].set_ylabel('4h FCR Price [€/MW]')
+
+    # General adjustments
+    for nx, ax in enumerate(axs):
+        # format x labels
+        major_locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
+        minor_locator = mdates.AutoDateLocator(minticks=3 * 4, maxticks=8 * 4)
+        formatter = mdates.ConciseDateFormatter(major_locator)
+        ax.xaxis.set_major_locator(major_locator)
+        ax.xaxis.set_minor_locator(minor_locator)
+        ax.xaxis.set_major_formatter(formatter)
+
+        axs[nx].grid(True, which='both')
+        axs[nx].yaxis.set_label_coords(-0.15, 0.5)
+
+    # if save_fig:
+        path = 'figures/'
+        filename = 'fcr_product'
+        plt.savefig(path + filename + '.svg', dpi=150, format='svg')
+        plt.savefig(path + filename + '.png', dpi=150, format='png')
+    # else:
+    # plt.show()
+
+
+def input_data_graphic():
+    md = MarketData()
+    fd = FrequencyData(FrequencyData.DATA_PATH + '/202*_Frequenz.csv')
+    data = fd.get_data_subset(duration=datetime.timedelta(days=365), dt=30)
+    ss = StorageSystem.StorageSystem(p_market=1)
+    fcr_price = md.get_fcr_data_subset(duration=datetime.timedelta(days=365), offset=datetime.timedelta(days=0))
+    da_price = md.get_da_data_subset(duration=datetime.timedelta(days=365), offset=datetime.timedelta(days=0))
+
+    fig, axs = plt.subplots(3, 1, constrained_layout=True, figsize=(16, 8), sharex=True)
+    # fig.suptitle('Input data')
+
+    # 1. System Frequency
+    nx = 0
+    axs[nx].set_title('System Frequency')
+    axs[nx].plot(data.index, data['freq'], linewidth=0.25)
+    axs[nx].set_ylabel('Sys Freq [Hz]')
+
+    # 1. FCR Price
+    nx += 1
+    axs[nx].set_title('4h FCR Product Price')
+    axs[nx].step(fcr_price.index, fcr_price['price'])
+    axs[nx].set_ylabel('4h FCR Price [€/MW]')
+
+    # 2. DA Price
+    nx += 1
+    axs[nx].set_title('Day-ahead Electricity Price')
+    axs[nx].step(da_price.index, da_price['price'])
+    axs[nx].set_ylabel('Day-ahead Price [€/MWh]')
+
+    # General adjustments
+    for nx, ax in enumerate(axs):
+        # format x labels
+        major_locator = mdates.AutoDateLocator(minticks=3, maxticks=8)
+        minor_locator = mdates.AutoDateLocator(minticks=3 * 4, maxticks=8 * 4)
+        formatter = mdates.ConciseDateFormatter(major_locator)
+        ax.xaxis.set_major_locator(major_locator)
+        ax.xaxis.set_minor_locator(minor_locator)
+        ax.xaxis.set_major_formatter(formatter)
+
+        axs[nx].grid(True, which='both')
+        axs[nx].yaxis.set_label_coords(-0.05, 0.5)
+
+    # if save_fig:
+        path = 'figures/'
+        filename = 'input_data'
+        plt.savefig(path + filename + '.svg', dpi=150, format='svg')
+        plt.savefig(path + filename + '.png', dpi=150, format='png')
+    # else:
+    # plt.show()
+
+
 def get_min_max(arr):
     return [min(arr), max(arr)]
 
@@ -479,3 +583,7 @@ def enable_pretty_plots():
 
 
 enable_pretty_plots()
+
+if __name__ == "__main__":
+    # fcr_overview_graphic()
+    input_data_graphic()
